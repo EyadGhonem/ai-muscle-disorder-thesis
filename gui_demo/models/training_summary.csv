@@ -1,0 +1,5 @@
+architecture,task,val_accuracy,path
+resnet50,disease,0.375,C:\Users\Lenovo\Desktop\thesis_project\gui_demo\models\resnet50_disease.keras
+densenet121,disease,0.265625,C:\Users\Lenovo\Desktop\thesis_project\gui_demo\models\densenet121_disease.keras
+efficientnetb0,disease,0.296875,C:\Users\Lenovo\Desktop\thesis_project\gui_demo\models\efficientnetb0_disease.keras
+mobilenetv2,disease,0.25,C:\Users\Lenovo\Desktop\thesis_project\gui_demo\models\mobilenetv2_disease.keras

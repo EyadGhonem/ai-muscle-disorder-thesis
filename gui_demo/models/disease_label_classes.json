@@ -1,0 +1,15 @@
+{
+  "classes": [
+    "Dermatomyositis",
+    "Inclusion Body Myositis",
+    "Normal",
+    "Polymyositis"
+  ],
+  "class_to_idx": {
+    "Dermatomyositis": 0,
+    "Inclusion Body Myositis": 1,
+    "Normal": 2,
+    "Polymyositis": 3
+  },
+  "task": "disease_multiclass_mat"
+}

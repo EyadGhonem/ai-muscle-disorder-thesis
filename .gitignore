@@ -1,0 +1,58 @@
+# Python
+venv/
+radiomics_env/
+.env
+__pycache__/
+*.pyc
+*.pyo
+
+# Large raw data & images (keep code + thesis docs in repo)
+data/
+raw_data/
+datasets/
+dl_images/
+processed_data/
+demo_data/
+*.png
+*.jpg
+*.jpeg
+*.tif
+*.mat
+*.h5
+*.npy
+*.npz
+
+# Trained weights (re-train via scripts/ or download separately)
+*.keras
+*.pth
+*.pt
+**/trained_models.pkl
+
+# Large outputs (allow small JSON/CSV summaries for thesis)
+output/
+!output/README*.md
+results/
+catboost_info/
+*.log
+
+# GUI: ship source code, not weights or demo images
+gui_demo/models/*.keras
+gui_demo/demo_images/
+
+# Optional comparison assets
+chatgpt_comparison/images/
+chatgpt_comparison/data/
+chatgpt_comparison/*.png
+chatgpt_comparison/*.jpg
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.tmp
+*.bak
+
+# Very large tabular exports at repo root (regenerate locally)
+final_ultrasound_dataset.csv
+final_ultrasound_dataset_REAL_features.csv
