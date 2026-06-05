@@ -37,7 +37,7 @@ os.makedirs(OUT_ROOT, exist_ok=True)
 PALETTE   = ["#2196F3", "#4CAF50", "#FF5722", "#9C27B0", "#FF9800"]
 EXCLUDE   = {"image_path", "patient_id", "disease", "severity_label",
              "dataset_source"}
-TREE_MODELS = ["Random Forest", "Gradient Boosting", "Extra Trees"]
+TREE_MODELS = ["Random Forest", "XGBoost", "Extra Trees"]
 
 plt.style.use("seaborn-v0_8-whitegrid")
 
