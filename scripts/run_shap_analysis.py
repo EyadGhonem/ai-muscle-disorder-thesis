@@ -115,9 +115,10 @@ for model_name in TREE_MODELS:
     print(f"  Saved beeswarm")
 
     # 2. Bar plot (mean |SHAP|)
-    top20_idx  = np.argsort(mean_abs)[::-1][:20]
-    top20_feat = [feature_cols[i] for i in top20_idx]
-    top20_vals = mean_abs[top20_idx]
+    top20_idx       = np.argsort(mean_abs)[::-1][:20]
+    feature_cols_arr = np.array(feature_cols)
+    top20_feat      = feature_cols_arr[top20_idx].tolist()
+    top20_vals      = mean_abs[top20_idx]
 
     fig, ax = plt.subplots(figsize=(9, 6))
     bars = ax.barh(top20_feat[::-1], top20_vals[::-1], color=PALETTE[0])
