@@ -1,0 +1,169 @@
+"""
+SHAP analysis for tree-based ML models.
+Outputs: beeswarm, bar, and waterfall plots per model.
+Run: python scripts/run_shap_analysis.py
+"""
+import sys
+import subprocess
+import importlib
+
+def ensure_shap():
+    try:
+        import shap
+        return shap
+    except ImportError:
+        print("Installing shap...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "shap", "-q"])
+        return importlib.import_module("shap")
+
+import os
+import pickle
+import numpy as np
+import pandas as pd
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from sklearn.model_selection import GroupShuffleSplit
+
+shap = ensure_shap()
+
+# ── paths ────────────────────────────────────────────────────────────────────
+BASE      = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PKL_PATH  = os.path.join(BASE, "output", "baseline_and_advanced_models", "trained_models.pkl")
+CSV_PATH  = os.path.join(BASE, "output", "final_ultrasound_dataset.csv")
+OUT_ROOT  = os.path.join(BASE, "output", "aplus", "run_shap_analysis")
+os.makedirs(OUT_ROOT, exist_ok=True)
+
+PALETTE   = ["#2196F3", "#4CAF50", "#FF5722", "#9C27B0", "#FF9800"]
+EXCLUDE   = {"image_path", "patient_id", "disease", "severity_label",
+             "dataset_source", "severity"}
+TREE_MODELS = ["Random Forest", "Gradient Boosting", "Extra Trees"]
+
+plt.style.use("seaborn-v0_8-whitegrid")
+
+# ── load data ────────────────────────────────────────────────────────────────
+print("Loading dataset …")
+df = pd.read_csv(CSV_PATH)
+df = df[df["disease"].notna() & (df["disease"] != "NAN")].copy()
+
+feature_cols = [c for c in df.columns if c not in EXCLUDE]
+X = df[feature_cols].fillna(df[feature_cols].median())
+groups = df["patient_id"].astype(str)
+
+with open(PKL_PATH, "rb") as f:
+    bundle = pickle.load(f)
+
+models  = bundle["models"]
+scaler  = bundle["scaler"]
+le      = bundle["label_encoder"]
+
+# encode labels
+y_raw = df["disease"].values
+mask  = np.isin(y_raw, le.classes_)
+X, y_raw, groups = X[mask], y_raw[mask], groups[mask]
+y = le.transform(y_raw)
+
+# patient-level split (same seed as training)
+gss = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+_, test_idx = next(gss.split(X, y, groups))
+X_test_raw = X.iloc[test_idx]
+y_test     = y[test_idx]
+
+X_test_sc = scaler.transform(X_test_raw)
+X_test_df = pd.DataFrame(X_test_sc, columns=feature_cols)
+
+print(f"Test set: {len(X_test_df)} samples")
+
+# ── SHAP per model ───────────────────────────────────────────────────────────
+for model_name in TREE_MODELS:
+    if model_name not in models:
+        print(f"  [{model_name}] not in pkl — skipping")
+        continue
+
+    model = models[model_name]
+    print(f"\nRunning SHAP for {model_name} …")
+    out_dir = os.path.join(OUT_ROOT, model_name.replace(" ", "_"))
+    os.makedirs(out_dir, exist_ok=True)
+
+    explainer   = shap.TreeExplainer(model)
+    shap_values = explainer.shap_values(X_test_df)
+
+    # multi-class: shap_values is list[n_classes] or array (n_samples, n_feat, n_classes)
+    if isinstance(shap_values, list):
+        shap_arr = np.stack(shap_values, axis=-1)          # (n, f, c)
+        mean_abs = np.abs(shap_arr).mean(axis=(0, 2))      # (f,)
+        # pick class with most samples for waterfall
+        dominant_classes = [int(np.argmax(np.bincount(y_test[y_test == c].shape[0]
+                                                       for c in range(len(le.classes_)))
+                                          if False else np.bincount(y_test)[:len(le.classes_)]))]
+    else:
+        shap_arr = shap_values                             # (n, f) binary / already summed
+        mean_abs = np.abs(shap_arr).mean(axis=0)
+
+    # 1. Beeswarm (summary plot) — top 20 features
+    plt.figure(figsize=(10, 7))
+    if isinstance(shap_values, list):
+        sv_plot = shap_values[int(np.argmax(np.bincount(y_test)))]
+    else:
+        sv_plot = shap_values
+    shap.summary_plot(sv_plot, X_test_df, max_display=20, show=False,
+                      color_bar=True)
+    plt.title(f"{model_name} — SHAP Beeswarm (top 20 features)", fontsize=13)
+    plt.tight_layout()
+    plt.savefig(os.path.join(out_dir, "shap_beeswarm.png"), dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  Saved beeswarm")
+
+    # 2. Bar plot (mean |SHAP|)
+    top20_idx  = np.argsort(mean_abs)[::-1][:20]
+    top20_feat = [feature_cols[i] for i in top20_idx]
+    top20_vals = mean_abs[top20_idx]
+
+    fig, ax = plt.subplots(figsize=(9, 6))
+    bars = ax.barh(top20_feat[::-1], top20_vals[::-1], color=PALETTE[0])
+    ax.set_xlabel("Mean |SHAP value|")
+    ax.set_title(f"{model_name} — Mean |SHAP| Importance (top 20)")
+    plt.tight_layout()
+    fig.savefig(os.path.join(out_dir, "shap_bar.png"), dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  Saved bar plot")
+
+    # 3. Waterfall for 3 individual samples (one per dominant class)
+    present_classes = [c for c in range(len(le.classes_)) if np.any(y_test == c)]
+    sample_classes  = present_classes[:3]
+
+    for cls_idx in sample_classes:
+        cls_name    = le.classes_[cls_idx]
+        sample_rows = np.where(y_test == cls_idx)[0]
+        if len(sample_rows) == 0:
+            continue
+        row = sample_rows[0]
+
+        if isinstance(shap_values, list):
+            sv_row = shap_values[cls_idx][row]
+            base   = explainer.expected_value[cls_idx] if isinstance(
+                         explainer.expected_value, (list, np.ndarray)) \
+                     else explainer.expected_value
+        else:
+            sv_row = shap_values[row]
+            base   = explainer.expected_value if not isinstance(
+                         explainer.expected_value, (list, np.ndarray)) \
+                     else explainer.expected_value[0]
+
+        exp = shap.Explanation(
+            values        = sv_row,
+            base_values   = base,
+            data          = X_test_df.iloc[row].values,
+            feature_names = feature_cols,
+        )
+        plt.figure(figsize=(10, 5))
+        shap.plots.waterfall(exp, max_display=15, show=False)
+        plt.title(f"{model_name} — Waterfall sample (class: {cls_name})", fontsize=11)
+        plt.tight_layout()
+        safe_cls = cls_name.replace(" ", "_")
+        plt.savefig(os.path.join(out_dir, f"shap_waterfall_{safe_cls}.png"),
+                    dpi=150, bbox_inches="tight")
+        plt.close()
+        print(f"  Saved waterfall for {cls_name}")
+
+print(f"\nAll SHAP outputs saved to: {OUT_ROOT}")
