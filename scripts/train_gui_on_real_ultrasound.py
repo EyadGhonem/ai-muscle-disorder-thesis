@@ -18,6 +18,7 @@ Usage (default = ALL ~28k labeled images, no subsampling):
   python scripts/train_gui_on_real_ultrasound.py --quick   # smoke test only
   python scripts/train_gui_on_real_ultrasound.py --ml-only
   python scripts/train_gui_on_real_ultrasound.py --dl-only --epochs 10
+  python scripts/train_gui_on_real_ultrasound.py --dl-only --dl-task disease --disease-enhanced --epochs 25
 """
 
 from __future__ import annotations
@@ -41,10 +42,12 @@ from sklearn.ensemble import (
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
+    classification_report,
     f1_score,
     precision_score,
     recall_score,
 )
+from sklearn.utils.class_weight import compute_class_weight
 from sklearn.model_selection import GroupShuffleSplit, train_test_split
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.svm import SVC
@@ -450,7 +453,47 @@ def _build_cnn(architecture: str, num_classes: int):
         loss=loss,
         metrics=["accuracy"],
     )
-    return model, preprocess_input
+    return model, preprocess_input, base
+
+
+def _arch_display(arch: str) -> str:
+    return (
+        arch.replace("efficientnetb0", "EfficientNetB0")
+        .replace("mobilenetv2", "MobileNetV2")
+        .replace("resnet50", "ResNet50")
+        .replace("densenet121", "DenseNet121")
+    )
+
+
+def _unfreeze_top_layers(base, architecture: str) -> None:
+    n_unfreeze = {"resnet50": 40, "densenet121": 40, "efficientnetb0": 30, "mobilenetv2": 35}.get(
+        architecture, 40
+    )
+    base.trainable = True
+    for layer in base.layers[:-n_unfreeze]:
+        layer.trainable = False
+
+
+def _load_ultrasound_tensor(filepath: str, preprocess_fn, augment: bool = False) -> np.ndarray | None:
+    from image_pipeline import prepare_ultrasound_cnn_tensor  # noqa: E402
+
+    return prepare_ultrasound_cnn_tensor(filepath, preprocess_fn, IMG_SIZE, augment=augment)
+
+
+def _eval_val_metrics(model, val_df: pd.DataFrame, preprocess_fn, augment: bool = False) -> tuple[float, float]:
+    ys, preds = [], []
+    for path, label in zip(val_df["filepath"].values, val_df["label"].values):
+        x = _load_ultrasound_tensor(path, preprocess_fn, augment=augment)
+        if x is None:
+            continue
+        p = model.predict(np.expand_dims(x, 0), verbose=0)
+        ys.append(int(label))
+        preds.append(int(np.argmax(p, axis=-1)[0]))
+    if not ys:
+        return 0.0, 0.0
+    acc = accuracy_score(ys, preds)
+    f1m = f1_score(ys, preds, average="macro", zero_division=0)
+    return float(acc), float(f1m)
 
 
 def _fit_cnn(df: pd.DataFrame, architectures: list[str], num_classes: int, epochs: int, out_dir: Path, suffix: str):
@@ -475,9 +518,9 @@ def _fit_cnn(df: pd.DataFrame, architectures: list[str], num_classes: int, epoch
 
     for arch in architectures:
         print(f"\n  DL {arch} ({suffix})...")
-        model, preprocess_fn = _build_cnn(arch, num_classes)
+        model, preprocess_fn, _base = _build_cnn(arch, num_classes)
 
-        def batch_generator(sub_df, shuffle):
+        def batch_generator(sub_df, shuffle, augment=False):
             paths = sub_df["filepath"].values
             labels = sub_df["label"].values
             while True:
@@ -486,11 +529,10 @@ def _fit_cnn(df: pd.DataFrame, architectures: list[str], num_classes: int, epoch
                     batch_idx = order[start : start + BATCH_SIZE]
                     xs, ys = [], []
                     for i in batch_idx:
-                        bgr = cv2.imread(str(paths[i]))
-                        if bgr is None:
+                        x = _load_ultrasound_tensor(paths[i], preprocess_fn, augment=augment and shuffle)
+                        if x is None:
                             continue
-                        rgb = cv2.cvtColor(cv2.resize(bgr, IMG_SIZE), cv2.COLOR_BGR2RGB)
-                        xs.append(preprocess_fn(rgb.astype(np.float32)))
+                        xs.append(x)
                         ys.append(labels[i])
                     if xs:
                         yield np.stack(xs), np.array(ys)
@@ -514,14 +556,149 @@ def _fit_cnn(df: pd.DataFrame, architectures: list[str], num_classes: int, epoch
         model.save(out_path)
         best = float(max(history.history["val_accuracy"]))
         rows.append({"architecture": arch, "task": suffix, "val_accuracy": best, "path": str(out_path)})
-        display = arch.replace("efficientnetb0", "EfficientNetB0").replace("mobilenetv2", "MobileNetV2")
-        display = display.replace("resnet50", "ResNet50").replace("densenet121", "DenseNet121")
-        dl_metrics[display] = round(best * 100, 2)
+        dl_metrics[_arch_display(arch)] = round(best * 100, 2)
         print(f"  Saved {out_path} (val_acc={best:.4f})")
 
     summary_df = pd.DataFrame(rows)
     summary_path = out_dir / ("training_summary.csv" if suffix == "disease" else f"training_summary_{suffix}.csv")
     summary_df.to_csv(summary_path, index=False)
+    return dl_metrics
+
+
+def _fit_cnn_enhanced_disease(
+    df: pd.DataFrame,
+    architectures: list[str],
+    num_classes: int,
+    epochs: int,
+    out_dir: Path,
+) -> dict:
+    """Two-phase MAT disease training: frozen head → fine-tune top layers, class weights, aug, macro F1."""
+    from tensorflow import keras
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    df = df.copy()
+    df["label"] = df["label"].astype(int)
+
+    gss = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=RANDOM_STATE)
+    tr_idx, va_idx = next(gss.split(df, groups=df["patient_id"]))
+    train_df, val_df = df.iloc[tr_idx], df.iloc[va_idx]
+    print(f"  Enhanced CNN | train={len(train_df)} val={len(val_df)} | epochs={epochs}")
+
+    y_train = train_df["label"].values
+    classes = np.unique(y_train)
+    cw = compute_class_weight("balanced", classes=classes, y=y_train)
+    class_weight = {int(c): float(w) for c, w in zip(classes, cw)}
+    print(f"  Class weights: {class_weight}")
+
+    phase1_epochs = max(6, epochs // 3)
+    phase2_epochs = max(1, epochs - phase1_epochs)
+    rows = []
+    dl_metrics: dict = {}
+
+    for arch in architectures:
+        print(f"\n  === Enhanced DL {arch} (disease) ===")
+        model, preprocess_fn, base = _build_cnn(arch, num_classes)
+
+        def batch_generator(sub_df, augment, weighted: bool = False):
+            paths = sub_df["filepath"].values
+            labels = sub_df["label"].values
+            while True:
+                order = np.random.permutation(len(paths))
+                for start in range(0, len(order), BATCH_SIZE):
+                    batch_idx = order[start : start + BATCH_SIZE]
+                    xs, ys = [], []
+                    for i in batch_idx:
+                        x = _load_ultrasound_tensor(paths[i], preprocess_fn, augment=augment)
+                        if x is None:
+                            continue
+                        xs.append(x)
+                        ys.append(labels[i])
+                    if xs:
+                        y_arr = np.array(ys)
+                        if weighted:
+                            sw = np.array([class_weight[int(y)] for y in y_arr], dtype=np.float32)
+                            yield np.stack(xs), y_arr, sw
+                        else:
+                            yield np.stack(xs), y_arr
+
+        steps_train = max(1, len(train_df) // BATCH_SIZE)
+        steps_val = max(1, len(val_df) // BATCH_SIZE)
+        val_gen = batch_generator(val_df, augment=False)
+
+        print(f"  Phase 1: frozen backbone, {phase1_epochs} epochs @ lr=1e-3")
+        base.trainable = False
+        model.compile(
+            optimizer=keras.optimizers.Adam(1e-3),
+            loss="sparse_categorical_crossentropy",
+            metrics=["accuracy"],
+        )
+        model.fit(
+            batch_generator(train_df, augment=True, weighted=True),
+            steps_per_epoch=steps_train,
+            validation_data=val_gen,
+            validation_steps=steps_val,
+            epochs=phase1_epochs,
+            callbacks=[
+                keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=2, min_lr=1e-5),
+            ],
+            verbose=1,
+        )
+
+        print(f"  Phase 2: fine-tune top layers, {phase2_epochs} epochs @ lr=1e-4")
+        _unfreeze_top_layers(base, arch)
+        model.compile(
+            optimizer=keras.optimizers.Adam(1e-4),
+            loss="sparse_categorical_crossentropy",
+            metrics=["accuracy"],
+        )
+        history = model.fit(
+            batch_generator(train_df, augment=True, weighted=True),
+            steps_per_epoch=steps_train,
+            validation_data=val_gen,
+            validation_steps=steps_val,
+            epochs=phase2_epochs,
+            callbacks=[
+                keras.callbacks.EarlyStopping(monitor="val_loss", patience=6, restore_best_weights=True),
+                keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=3, min_lr=1e-6),
+            ],
+            verbose=1,
+        )
+
+        val_acc, val_f1 = _eval_val_metrics(model, val_df, preprocess_fn)
+        hist_acc = float(max(history.history.get("val_accuracy", [0])))
+        best_acc = max(val_acc, hist_acc)
+
+        out_path = out_dir / f"{arch}_disease.keras"
+        model.save(out_path)
+        rows.append(
+            {
+                "architecture": arch,
+                "task": "disease_enhanced",
+                "val_accuracy": best_acc,
+                "val_f1_macro": val_f1,
+                "path": str(out_path),
+            }
+        )
+        display = _arch_display(arch)
+        dl_metrics[display] = {
+            "val_accuracy_pct": round(best_acc * 100, 2),
+            "val_f1_macro": round(val_f1, 4),
+        }
+        print(f"  Saved {out_path}")
+        print(f"  val_acc={best_acc:.4f} | val_macro_f1={val_f1:.4f}")
+        pred_vals = []
+        true_vals = []
+        for path, label in zip(val_df["filepath"].values, val_df["label"].values):
+            x = _load_ultrasound_tensor(path, preprocess_fn, augment=False)
+            if x is None:
+                continue
+            pred_vals.append(int(np.argmax(model.predict(np.expand_dims(x, 0), verbose=0), axis=-1)[0]))
+            true_vals.append(int(label))
+        if true_vals:
+            print(classification_report(true_vals, pred_vals, zero_division=0))
+
+    pd.DataFrame(rows).to_csv(out_dir / "training_summary_enhanced.csv", index=False)
+    pd.DataFrame(rows).to_csv(out_dir / "training_summary.csv", index=False)
     return dl_metrics
 
 
@@ -543,7 +720,13 @@ def train_dl_fshd_severity(manifest: pd.DataFrame, architectures: list[str], epo
     return _fit_cnn(df, architectures, 2, epochs, DL_SEVERITY_DIR, "severity")
 
 
-def train_dl_mat_disease(manifest: pd.DataFrame, architectures: list[str], epochs: int, max_per_class: int | None):
+def train_dl_mat_disease(
+    manifest: pd.DataFrame,
+    architectures: list[str],
+    epochs: int,
+    max_per_class: int | None,
+    enhanced: bool = False,
+):
     print("\n" + "=" * 60)
     print("TRAINING DL — MAT 4-class disease")
     print("=" * 60)
@@ -557,11 +740,19 @@ def train_dl_mat_disease(manifest: pd.DataFrame, architectures: list[str], epoch
             parts.append(g.sample(min(len(g), max_per_class), random_state=RANDOM_STATE))
         df = pd.concat(parts, ignore_index=True)
     GUI_MODELS_DIR.mkdir(parents=True, exist_ok=True)
-    meta = {"classes": classes, "class_to_idx": class_to_idx, "task": "disease_multiclass_mat"}
+    meta = {
+        "classes": classes,
+        "class_to_idx": class_to_idx,
+        "task": "disease_multiclass_mat",
+        "cnn_preprocess": "clahe_roi" if enhanced else "rgb_resize",
+    }
     (GUI_MODELS_DIR / "disease_label_classes.json").write_text(
         json.dumps(meta, indent=2), encoding="utf-8"
     )
     print(f"Disease samples: {len(df)} | classes={classes}")
+    if enhanced:
+        print("  Mode: ENHANCED (CLAHE ROI, aug, class weights, fine-tune top layers, macro F1)")
+        return _fit_cnn_enhanced_disease(df, architectures, len(classes), epochs, GUI_MODELS_DIR)
     return _fit_cnn(df, architectures, len(classes), epochs, GUI_MODELS_DIR, "disease")
 
 
@@ -570,8 +761,19 @@ def main():
     parser.add_argument("--quick", action="store_true", help="Small subset, 2 epochs (smoke test)")
     parser.add_argument("--ml-only", action="store_true")
     parser.add_argument("--dl-only", action="store_true")
+    parser.add_argument(
+        "--dl-task",
+        choices=["all", "severity", "disease"],
+        default="all",
+        help="With --dl-only: train only FSHD severity or MAT disease CNNs",
+    )
     parser.add_argument("--skip-features", action="store_true", help="Reuse existing gui_real_ultrasound_dataset.csv")
     parser.add_argument("--epochs", type=int, default=15)
+    parser.add_argument(
+        "--disease-enhanced",
+        action="store_true",
+        help="MAT disease CNNs: fine-tune, class weights, CLAHE ROI aug, report macro F1 (use --epochs 25)",
+    )
     parser.add_argument("--max-per-class", type=int, default=0, help="0 = no cap")
     parser.add_argument(
         "--models",
@@ -582,6 +784,8 @@ def main():
     args = parser.parse_args()
 
     epochs = 2 if args.quick else args.epochs
+    if args.disease_enhanced and not args.quick and args.epochs == 15:
+        epochs = 25
     max_pc = 80 if args.quick else (args.max_per_class if args.max_per_class > 0 else None)
 
     manifest = build_manifest()
@@ -623,11 +827,28 @@ def main():
                 "Run full radiomics first (omit --dl-only) or ensure "
                 "output/gui_real_ultrasound_dataset.csv has ~28199 rows."
             )
-        print(f"\nDL training: ALL labeled images | {epochs} epochs | no per-class cap")
-        sev_m = train_dl_fshd_severity(manifest, args.models, epochs, max_pc)
-        dis_m = train_dl_mat_disease(manifest, args.models, epochs, max_pc)
-        all_metrics["dl_severity"] = sev_m
-        all_metrics["dl_disease"] = dis_m
+        print(f"\nDL training: ALL labeled images | {epochs} epochs | task={args.dl_task}")
+        sev_m, dis_m = {}, {}
+        if args.dl_task in ("all", "severity"):
+            sev_m = train_dl_fshd_severity(manifest, args.models, epochs, max_pc)
+            all_metrics["dl_severity"] = sev_m
+        elif METRICS_PATH.exists():
+            try:
+                prev = json.loads(METRICS_PATH.read_text(encoding="utf-8"))
+                all_metrics["dl_severity"] = prev.get("dl_severity", {})
+            except Exception:
+                pass
+        if args.dl_task in ("all", "disease"):
+            dis_m = train_dl_mat_disease(
+                manifest, args.models, epochs, max_pc, enhanced=args.disease_enhanced
+            )
+            all_metrics["dl_disease"] = dis_m
+        elif METRICS_PATH.exists():
+            try:
+                prev = json.loads(METRICS_PATH.read_text(encoding="utf-8"))
+                all_metrics["dl_disease"] = prev.get("dl_disease", {})
+            except Exception:
+                pass
 
     GUI_MODELS_DIR.mkdir(parents=True, exist_ok=True)
     METRICS_PATH.write_text(json.dumps(all_metrics, indent=2), encoding="utf-8")

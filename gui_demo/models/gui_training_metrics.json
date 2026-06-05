@@ -56,9 +56,21 @@
     "MobileNetV2": 78.12
   },
   "dl_disease": {
-    "ResNet50": 37.5,
-    "DenseNet121": 26.56,
-    "EfficientNetB0": 29.69,
-    "MobileNetV2": 25.0
+    "ResNet50": {
+      "val_accuracy_pct": 42.07,
+      "val_f1_macro": 0.4076
+    },
+    "DenseNet121": {
+      "val_accuracy_pct": 42.15,
+      "val_f1_macro": 0.4044
+    },
+    "EfficientNetB0": {
+      "val_accuracy_pct": 43.31,
+      "val_f1_macro": 0.4321
+    },
+    "MobileNetV2": {
+      "val_accuracy_pct": 42.64,
+      "val_f1_macro": 0.3647
+    }
   }
 }

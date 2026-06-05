@@ -112,6 +112,38 @@ def run_inspect_pipeline(image_path: Path) -> dict:
     }
 
 
+IMG_SIZE_CNN = (224, 224)
+
+
+def prepare_ultrasound_cnn_tensor(
+    image_path: Path | str,
+    preprocess_fn,
+    img_size: tuple[int, int] = IMG_SIZE_CNN,
+    augment: bool = False,
+) -> np.ndarray | None:
+    """CLAHE + ROI mask → 3-channel tensor for disease CNN (matches enhanced training)."""
+    bgr = load_bgr(Path(image_path))
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    if augment:
+        if np.random.rand() > 0.5:
+            gray = cv2.flip(gray, 1)
+        angle = np.random.uniform(-18, 18)
+        m = cv2.getRotationMatrix2D((gray.shape[1] / 2, gray.shape[0] / 2), angle, 1.0)
+        gray = cv2.warpAffine(gray, m, (gray.shape[1], gray.shape[0]), borderMode=cv2.BORDER_REFLECT)
+        if np.random.rand() > 0.5:
+            beta = np.random.randint(-25, 25)
+            gray = np.clip(gray.astype(np.int16) + beta, 0, 255).astype(np.uint8)
+
+    _, mask, _ = build_roi_mask(gray)
+    norm = cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    enhanced = clahe.apply(norm)
+    roi = enhanced.copy()
+    roi[mask == 0] = 0
+    rgb = cv2.cvtColor(cv2.resize(roi, img_size), cv2.COLOR_GRAY2RGB)
+    return preprocess_fn(rgb.astype(np.float32))
+
+
 def extract_radiomics_dict(grayscale: np.ndarray, mask: np.ndarray) -> dict:
     """Same feature families as thesis custom radiomics extraction."""
     if grayscale.max() > 0:

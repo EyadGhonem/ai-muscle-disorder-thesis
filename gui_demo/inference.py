@@ -58,7 +58,10 @@ def _load_trained_val_acc() -> tuple[dict[str, float], dict[str, float]]:
             if "val_accuracy_pct" in m:
                 ml[name] = float(m["val_accuracy_pct"])
         for name, pct in data.get("dl_disease", {}).items():
-            dl[name] = float(pct)
+            if isinstance(pct, dict):
+                dl[name] = float(pct.get("val_accuracy_pct", pct.get("val_f1_macro", 0) * 100))
+            else:
+                dl[name] = float(pct)
         for name, pct in data.get("dl_severity", {}).items():
             if name not in dl or data.get("dl_disease", {}).get(name, 0) == 0:
                 dl[name] = float(pct)
@@ -374,11 +377,26 @@ def _predict_severity_cnn(cnn: CNNModel, image_path: Path) -> dict:
 
 
 def _predict_disease_cnn(cnn: CNNModel, image_path: Path) -> dict:
+    from image_pipeline import prepare_ultrasound_cnn_tensor
+
     model = load_cnn_keras(cnn)
     pre_fn = get_preprocess_fn(cnn.architecture)
     classes = cnn.class_names or []
-    img = _load_rgb(image_path)
-    x = np.expand_dims(pre_fn(img.astype(np.float32)), axis=0)
+    meta_path = Path(__file__).resolve().parent / "models" / "disease_label_classes.json"
+    use_clahe = False
+    if meta_path.exists():
+        import json
+
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        use_clahe = meta.get("cnn_preprocess") == "clahe_roi"
+    if use_clahe:
+        tensor = prepare_ultrasound_cnn_tensor(image_path, pre_fn, augment=False)
+        if tensor is None:
+            return {"error": "Could not read image for CNN."}
+        x = np.expand_dims(tensor, axis=0)
+    else:
+        img = _load_rgb(image_path)
+        x = np.expand_dims(pre_fn(img.astype(np.float32)), axis=0)
     probs = model.predict(x, verbose=0)[0]
     idx = int(np.argmax(probs))
     confidence = float(probs[idx]) * 100

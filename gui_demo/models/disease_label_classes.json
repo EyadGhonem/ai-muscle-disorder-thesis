@@ -11,5 +11,6 @@
     "Normal": 2,
     "Polymyositis": 3
   },
-  "task": "disease_multiclass_mat"
+  "task": "disease_multiclass_mat",
+  "cnn_preprocess": "clahe_roi"
 }
