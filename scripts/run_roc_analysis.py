@@ -22,7 +22,7 @@ os.makedirs(OUT_ROOT, exist_ok=True)
 
 PALETTE  = ["#2196F3", "#4CAF50", "#FF5722", "#9C27B0", "#FF9800"]
 EXCLUDE  = {"image_path", "patient_id", "disease", "severity_label",
-            "dataset_source", "severity"}
+            "dataset_source"}
 
 PROBA_MODELS = {"SVM", "Random Forest", "Gradient Boosting", "XGBoost",
                 "LightGBM", "CatBoost", "Extra Trees", "Logistic Regression"}
@@ -54,7 +54,7 @@ y      = le.transform(y_raw)
 
 gss = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
 _, test_idx = next(gss.split(X, y, groups))
-X_test = scaler.transform(X.iloc[test_idx])
+X_test = scaler.transform(X.iloc[test_idx].values)
 y_test = y[test_idx]
 
 y_bin = label_binarize(y_test, classes=list(range(n_cls)))

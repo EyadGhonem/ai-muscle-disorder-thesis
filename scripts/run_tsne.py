@@ -55,7 +55,7 @@ else:
 
 # ── t-SNE ─────────────────────────────────────────────────────────────────────
 print("Running t-SNE (this may take a few minutes) …")
-tsne = TSNE(n_components=2, perplexity=40, random_state=42, n_iter=1000,
+tsne = TSNE(n_components=2, perplexity=40, random_state=42, max_iter=1000,
             init="pca", learning_rate="auto")
 Z_tsne = tsne.fit_transform(X_sub)
 print("  Done.")

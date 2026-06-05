@@ -36,7 +36,7 @@ os.makedirs(OUT_ROOT, exist_ok=True)
 
 PALETTE   = ["#2196F3", "#4CAF50", "#FF5722", "#9C27B0", "#FF9800"]
 EXCLUDE   = {"image_path", "patient_id", "disease", "severity_label",
-             "dataset_source", "severity"}
+             "dataset_source"}
 TREE_MODELS = ["Random Forest", "Gradient Boosting", "Extra Trees"]
 
 plt.style.use("seaborn-v0_8-whitegrid")
@@ -69,7 +69,7 @@ _, test_idx = next(gss.split(X, y, groups))
 X_test_raw = X.iloc[test_idx]
 y_test     = y[test_idx]
 
-X_test_sc = scaler.transform(X_test_raw)
+X_test_sc = scaler.transform(X_test_raw.values)
 X_test_df = pd.DataFrame(X_test_sc, columns=feature_cols)
 
 print(f"Test set: {len(X_test_df)} samples")

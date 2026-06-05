@@ -102,6 +102,7 @@ for ax, (name, clf) in zip(axes, lc_models.items()):
         train_sizes  = train_sizes,
         scoring      = "accuracy",
         n_jobs       = -1,
+        error_score  = 0,
     )
     tr_mean = tr_scores.mean(axis=1)
     tr_std  = tr_scores.std(axis=1)
