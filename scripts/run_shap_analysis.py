@@ -88,24 +88,28 @@ for model_name in TREE_MODELS:
     explainer   = shap.TreeExplainer(model)
     shap_values = explainer.shap_values(X_test_df)
 
-    # multi-class: shap_values is list[n_classes] or array (n_samples, n_feat, n_classes)
+    # Normalise to a single numpy array regardless of shap version output format:
+    # list-of-arrays  → stack to (n, f, c)
+    # already 3D array (n, f, c) → keep as-is
+    # 2D array (n, f) → keep as-is
     if isinstance(shap_values, list):
-        shap_arr = np.stack(shap_values, axis=-1)          # (n, f, c)
-        mean_abs = np.abs(shap_arr).mean(axis=(0, 2))      # (f,)
-        # pick class with most samples for waterfall
-        dominant_classes = [int(np.argmax(np.bincount(y_test[y_test == c].shape[0]
-                                                       for c in range(len(le.classes_)))
-                                          if False else np.bincount(y_test)[:len(le.classes_)]))]
+        shap_vals = np.stack(shap_values, axis=-1)   # (n, f, c)
     else:
-        shap_arr = shap_values                             # (n, f) binary / already summed
-        mean_abs = np.abs(shap_arr).mean(axis=0)
+        shap_vals = np.array(shap_values)            # (n, f) or (n, f, c)
+
+    # collapse multi-class SHAP to mean absolute value per feature
+    if shap_vals.ndim == 3:
+        mean_abs_shap = np.abs(shap_vals).mean(axis=(0, 2))  # shape: (n_features,)
+    else:
+        mean_abs_shap = np.abs(shap_vals).mean(axis=0)       # shape: (n_features,)
 
     # 1. Beeswarm (summary plot) — top 20 features
-    plt.figure(figsize=(10, 7))
-    if isinstance(shap_values, list):
-        sv_plot = shap_values[int(np.argmax(np.bincount(y_test)))]
+    # pass a 2D slice to shap.summary_plot; use mean across classes for 3D
+    if shap_vals.ndim == 3:
+        sv_plot = shap_vals.mean(axis=2)   # (n, f) — averaged over classes
     else:
-        sv_plot = shap_values
+        sv_plot = shap_vals
+    plt.figure(figsize=(10, 7))
     shap.summary_plot(sv_plot, X_test_df, max_display=20, show=False,
                       color_bar=True)
     plt.title(f"{model_name} — SHAP Beeswarm (top 20 features)", fontsize=13)
@@ -115,10 +119,10 @@ for model_name in TREE_MODELS:
     print(f"  Saved beeswarm")
 
     # 2. Bar plot (mean |SHAP|)
-    top20_idx       = np.argsort(mean_abs)[::-1][:20]
+    top20_idx        = np.argsort(mean_abs_shap)[-20:]
     feature_cols_arr = np.array(feature_cols)
-    top20_feat      = feature_cols_arr[top20_idx].tolist()
-    top20_vals      = mean_abs[top20_idx]
+    top20_feat       = feature_cols_arr[top20_idx].tolist()
+    top20_vals       = mean_abs_shap[top20_idx]
 
     fig, ax = plt.subplots(figsize=(9, 6))
     bars = ax.barh(top20_feat[::-1], top20_vals[::-1], color=PALETTE[0])
@@ -140,16 +144,14 @@ for model_name in TREE_MODELS:
             continue
         row = sample_rows[0]
 
-        if isinstance(shap_values, list):
-            sv_row = shap_values[cls_idx][row]
-            base   = explainer.expected_value[cls_idx] if isinstance(
-                         explainer.expected_value, (list, np.ndarray)) \
-                     else explainer.expected_value
+        if shap_vals.ndim == 3:
+            sv_row = shap_vals[row, :, cls_idx]   # (n_features,) for this class
+            ev     = explainer.expected_value
+            base   = ev[cls_idx] if isinstance(ev, (list, np.ndarray)) else float(ev)
         else:
-            sv_row = shap_values[row]
-            base   = explainer.expected_value if not isinstance(
-                         explainer.expected_value, (list, np.ndarray)) \
-                     else explainer.expected_value[0]
+            sv_row = shap_vals[row]               # (n_features,)
+            ev     = explainer.expected_value
+            base   = float(ev[0]) if isinstance(ev, (list, np.ndarray)) else float(ev)
 
         exp = shap.Explanation(
             values        = sv_row,
