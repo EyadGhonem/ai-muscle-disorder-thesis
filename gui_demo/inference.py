@@ -449,14 +449,7 @@ def format_ml_display(
     cls = pred["predicted_class"]
     status, dtype = disease_status(cls)
     correct = _labels_match(cls, true_label) if true_label else None
-    conf = model_display_confidence(
-        model_name,
-        image_path,
-        pred.get("task", "disease_multiclass"),
-        correct,
-        run_index,
-        model_index,
-    )
+    conf = round(float(pred.get("confidence", 0.0)), 1)
 
     return {
         "selected_model": model_name,
@@ -488,9 +481,7 @@ def format_cnn_display(
         sev = pred.get("severity_detail", pred["predicted_class"])
         display = pred.get("display_disease", "FSHD")
         correct = true_label == "FSHD" if true_label else None
-        conf = model_display_confidence(
-            model_name, image_path, task, correct, run_index, model_index
-        )
+        conf = round(float(pred.get("confidence", 0.0)), 1)
         return {
             "selected_model": model_name,
             "predicted_class": display,
@@ -499,15 +490,13 @@ def format_cnn_display(
             "confidence": conf,
             "true_label": true_label or "—",
             "correct": correct,
-        "task_note": "",
-    }
+            "task_note": "",
+        }
 
     cls = pred.get("display_disease", pred["predicted_class"])
     status, dtype = disease_status(cls)
     correct = _labels_match(cls, true_label) if true_label else None
-    conf = model_display_confidence(
-        model_name, image_path, task, correct, run_index, model_index
-    )
+    conf = round(float(pred.get("confidence", 0.0)), 1)
 
     return {
         "selected_model": model_name,
