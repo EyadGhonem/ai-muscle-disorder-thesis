@@ -230,7 +230,13 @@ def render_sidebar(ml_bundle, cnns_fshd, cnns_mat, cohort, warnings):
 
 
 def render_roi_steps(image_path: Path):
-    st.markdown('<p class="section-head">🔬 Radiomics Pipeline — ROI Inspection</p>', unsafe_allow_html=True)
+    st.markdown('<p class="section-head">👁️ How the AI Sees This Image</p>', unsafe_allow_html=True)
+    st.caption(
+        "The model does not see the raw ultrasound. It first isolates the muscle region using "
+        "automatic segmentation, then extracts features only from that region. "
+        "This panel shows exactly what the AI analyzed — if the mask looks wrong, "
+        "the prediction should be disregarded."
+    )
     pipe = run_inspect_pipeline(image_path)
     keys = ["original", "grayscale", "threshold", "roi_overlay", "processed"]
     cols = st.columns(5)
@@ -238,7 +244,8 @@ def render_roi_steps(image_path: Path):
         with col:
             st.image(pipe[key], use_container_width=True, clamp=True)
             st.markdown(f'<p class="roi-label">{title}</p>', unsafe_allow_html=True)
-            st.markdown(f'<p class="roi-desc">{desc}</p>', unsafe_allow_html=True)
+            extra = "<br><em>← The AI only analyzes pixels inside this region</em>" if key == "roi_overlay" else ""
+            st.markdown(f'<p class="roi-desc">{desc}{extra}</p>', unsafe_allow_html=True)
 
 
 def render_single_card(display: dict):
@@ -395,7 +402,10 @@ def _about_expander():
         with c1:
             st.markdown("""
 **Dataset**
-- ~28,199 labeled ultrasound images
+- 8,017 fully labeled samples used for ML evaluation
+  (4,775 FSHD with Heckmatt severity labels + 3,242 multi-disease samples)
+- ~28,199 real ultrasound images in the full training pipeline
+  (includes all FSHD frames, not all have severity labels)
 - 5 disease classes: FSHD, Normal, IBM, Dermatomyositis, Polymyositis
 - Sources: ULTRASOUND_LABELD_1 (FSHD) + MAT_LABELED (myopathy)
 
@@ -415,9 +425,11 @@ Texture (GLCM) · Shape · Gradient · First-order statistics
 Patient-level GroupShuffleSplit (80/20) · Macro F1 primary metric
 
 **Best Results**
-- ML accuracy: ~93% image-level · Macro F1 ~0.51
-- FSHD severity CNN (ResNet50): val acc **84.4%**
-- MAT disease CNN (EfficientNetB0): val acc **43.3%**, Macro F1 **0.43**
+- ML patient-level evaluation: SVM 98.35% accuracy, macro F1 0.41
+- All-real-feature pipeline: XGBoost macro F1 0.514
+- FSHD severity CNN (ResNet50): validation accuracy **84.4%**
+- MAT disease CNN (EfficientNetB0): validation accuracy **43.3%**
+  *(exploratory — limited by ~800 images per class after patient split)*
 
 **Author:** Eyad Ghonem · GUC MET Bachelor Thesis
 """)
