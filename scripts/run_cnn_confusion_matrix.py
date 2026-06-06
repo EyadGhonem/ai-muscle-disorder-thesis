@@ -43,6 +43,11 @@ print(f"Classes: {classes}")
 print(f"Scanning {MAT_DIR} …")
 rows = []
 
+# Map known alternative folder names to canonical class labels
+FOLDER_ALIASES = {
+    "IBM": "Inclusion Body Myositis",
+}
+
 # Try subfolder-per-class layout first
 for cls_name in classes:
     safe = cls_name.replace(" ", "_")
@@ -53,6 +58,14 @@ for cls_name in classes:
         hits = glob.glob(pattern)
         for p in hits:
             rows.append({"path": p, "disease": cls_name})
+
+# Also scan subfolders by alias (e.g. "IBM" → "Inclusion Body Myositis")
+for folder_name, mapped_cls in FOLDER_ALIASES.items():
+    if mapped_cls not in classes:
+        continue
+    hits = glob.glob(os.path.join(MAT_DIR, folder_name, "*.png"))
+    for p in hits:
+        rows.append({"path": p, "disease": mapped_cls})
 
 # Fall back: flat folder with class name embedded in filename
 if not rows:
@@ -118,10 +131,12 @@ y_pred = np.array(y_pred)
 acc = accuracy_score(y_test, y_pred) * 100
 print(f"\nOverall accuracy: {acc:.2f}%")
 print("\nClassification report:")
-print(classification_report(y_test, y_pred, target_names=classes))
+actual_classes = sorted(set(y_test))
+actual_names   = [classes[i] for i in actual_classes]
+print(classification_report(y_test, y_pred, labels=actual_classes, target_names=actual_names))
 
 # ── confusion matrix heatmap ──────────────────────────────────────────────────
-cm      = confusion_matrix(y_test, y_pred)
+cm      = confusion_matrix(y_test, y_pred, labels=actual_classes)
 cm_norm = cm.astype(float) / cm.sum(axis=1, keepdims=True)   # normalise by true label
 
 fig, ax = plt.subplots(figsize=(7, 6))
@@ -129,8 +144,8 @@ sns.heatmap(
     cm_norm,
     annot=True, fmt=".2f",
     cmap="Blues",
-    xticklabels=classes,
-    yticklabels=classes,
+    xticklabels=actual_names,
+    yticklabels=actual_names,
     linewidths=0.5,
     vmin=0, vmax=1,
     ax=ax,
