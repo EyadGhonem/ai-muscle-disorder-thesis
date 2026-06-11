@@ -1,5 +1,26 @@
 """
-Confusion matrix for EfficientNetB0 disease model on the MAT test split.
+run_cnn_confusion_matrix.py
+----------------------------
+Generates a normalised confusion matrix for the EfficientNetB0 4-class disease CNN.
+
+Input:
+  gui_demo/models/efficientnetb0_disease.keras   — trained CNN weights
+  gui_demo/models/disease_label_classes.json     — class-index mapping (4 classes)
+  data/images_extracted_from_mat_LABELED/        — MAT ultrasound images per class folder
+
+Processing:
+  1. Scan all PNG files in the MAT folder structure (including "IBM" → "Inclusion Body Myositis").
+  2. Parse patient ID from each filename stem (characters before the first underscore).
+  3. Apply GroupShuffleSplit (test_size=0.2, random_state=42) to create a patient-level
+     test split — the same strategy used during CNN training.
+  4. Run inference on every test image and collect true vs predicted labels.
+  5. Plot a seaborn heatmap of the confusion matrix (normalised by true label,
+     so each row sums to 1.0).
+  6. Print a per-class classification report (precision, recall, F1).
+
+Output (saved to output/aplus/):
+  cnn_confusion_matrix.png  — normalised heatmap
+
 Run: python scripts/run_cnn_confusion_matrix.py
 """
 import os

@@ -1,5 +1,30 @@
 """
-Grad-CAM visualisations for EfficientNetB0 disease model.
+run_gradcam.py
+--------------
+Gradient-weighted Class Activation Mapping (Grad-CAM) visualisations for the
+EfficientNetB0 MAT 4-class disease CNN.
+
+Grad-CAM highlights the image regions that most influenced the CNN's prediction
+by computing the gradient of the predicted class score with respect to the last
+convolutional layer's feature maps, then creating a weighted average heatmap.
+
+Input:
+  gui_demo/models/efficientnetb0_disease.keras   — trained disease CNN weights
+  gui_demo/models/disease_label_classes.json     — class-index mapping
+  output/gui_real_ultrasound_manifest.csv        — (optional) image paths per class
+  data/images_extracted_from_mat_LABELED/        — fallback image source
+
+Processing:
+  1. Load the EfficientNetB0 model and class names.
+  2. Find one representative image per disease class (from manifest or MAT folder).
+  3. For each image, run ``compute_gradcam`` to obtain the heatmap and overlay it
+     on the original image using a JET colormap (``overlay_heatmap``).
+  4. Run model inference and record the predicted class for each image.
+
+Output (saved to output/aplus/run_gradcam/):
+  gradcam_<ClassName>.png  — side-by-side original + Grad-CAM overlay per class
+  gradcam_grid.png         — combined grid of all classes (2 rows × n_classes cols)
+
 Run: python scripts/run_gradcam.py
 """
 import os
@@ -63,7 +88,28 @@ def load_and_preprocess(path):
 
 
 def compute_gradcam(model, img_array, class_idx):
-    """Pure TF GradientTape Grad-CAM; returns heatmap (H,W) float32."""
+    """Compute a Grad-CAM heatmap for a single image and target class.
+
+    Algorithm (pure TensorFlow GradientTape):
+    1. Build a sub-model that outputs (last_conv_feature_map, predictions).
+    2. Record gradients of the target class score w.r.t. the feature maps.
+    3. Pool the gradients spatially (global average) to get per-channel weights.
+    4. Compute the weighted sum of feature maps → ReLU → normalise to [0, 1].
+
+    Handles both flat-layer and nested-backbone architectures (EfficientNet
+    wraps its Conv2D layers inside a sub-model).
+
+    Parameters
+    ----------
+    model      : loaded Keras model
+    img_array  : (H, W, 3) float32 image array in [0, 1]
+    class_idx  : index of the target class in the softmax output
+
+    Returns
+    -------
+    np.ndarray of shape (H', W') normalised to [0, 1], where H'×W' is the
+    spatial resolution of the last convolutional feature map.
+    """
     # find last conv layer in the backbone sub-model or top model
     grad_model = None
     for layer in reversed(model.layers):
@@ -112,7 +158,18 @@ def compute_gradcam(model, img_array, class_idx):
 
 
 def overlay_heatmap(img_np, heatmap, alpha=0.4):
-    """Resize heatmap to img size and blend."""
+    """Resize the Grad-CAM heatmap to match the input image and blend with JET colormap.
+
+    Parameters
+    ----------
+    img_np  : (H, W, 3) float32 original image in [0, 1]
+    heatmap : (H', W') normalised Grad-CAM map in [0, 1]
+    alpha   : blending weight for the heatmap overlay (default 0.4)
+
+    Returns
+    -------
+    (H, W, 3) float32 blended image clipped to [0, 1]
+    """
     from PIL import Image
     h, w = img_np.shape[:2]
     hm_uint8 = (heatmap * 255).astype(np.uint8)
@@ -125,6 +182,16 @@ def overlay_heatmap(img_np, heatmap, alpha=0.4):
 
 # ── find one sample image per class ──────────────────────────────────────────
 def find_samples():
+    """Locate one representative image per disease class.
+
+    Search order:
+    1. gui_real_ultrasound_manifest.csv (pre-built image list).
+    2. Direct sub-folder scan under data/images_extracted_from_mat_LABELED/.
+
+    Returns
+    -------
+    dict mapping class_name → absolute image file path
+    """
     samples = {}  # class_name -> path
 
     # try manifest first

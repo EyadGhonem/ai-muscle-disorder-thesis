@@ -1,6 +1,28 @@
 """
-t-SNE and PCA visualisations of radiomics feature space.
-Produces 4 figures: t-SNE by disease, t-SNE by source, PCA by disease, PCA by source.
+run_tsne.py
+-----------
+Dimensionality reduction visualisations of the radiomics feature space.
+
+Produces four scatter plots to illustrate how well the 28 radiomics features
+separate the disease classes and data sources in a 2D embedding:
+
+  1. t-SNE coloured by disease class
+  2. t-SNE coloured by dataset source (ULTRASOUND_LABELD_1 vs MAT_LABELED)
+  3. PCA coloured by disease class
+  4. PCA coloured by dataset source
+
+Input:
+  output/final_ultrasound_dataset.csv  — radiomics feature table with disease labels
+
+Output (saved to output/aplus/run_tsne/):
+  tsne_by_disease.png
+  tsne_by_source.png
+  pca_by_disease.png
+  pca_by_source.png
+
+Note: t-SNE is run with perplexity=40, max_iter=1000, random_state=42 to ensure
+reproducibility. Features are standardised with StandardScaler before reduction.
+
 Run: python scripts/run_tsne.py
 """
 import os

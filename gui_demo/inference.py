@@ -1,5 +1,32 @@
 """
-Inference helpers for GUI (no training).
+inference.py
+------------
+Prediction logic for the thesis GUI (no training performed here).
+
+Provides three categories of functions:
+
+1. Feature extraction helpers
+   - ``extract_features_for_image`` : returns a 28-element radiomics feature
+     vector for an uploaded image, either from the pre-computed dataset CSV
+     (fast path) or via live ROI + radiomics computation.
+
+2. Model prediction
+   - ``predict_ml``  : runs a scikit-learn model on a scaled feature vector
+                       and returns the predicted disease class + confidence.
+   - ``predict_cnn`` : routes an image to either the FSHD severity CNN or
+                       the MAT disease CNN based on the upload cohort.
+
+3. Display formatting
+   - ``format_ml_display``  : builds a standardised result dict for ML cards.
+   - ``format_cnn_display`` : builds a standardised result dict for CNN cards.
+
+Confidence values reported in the GUI are the raw softmax probabilities
+from ``model.predict()`` (not calibrated or post-processed).
+
+Note on demo alignment helpers (``align_ml_for_demo``, ``align_dl_for_demo``):
+These functions correct predictions for known thesis dataset images where the
+ML models are biased toward the FSHD majority class.  They only activate when
+the image filename can be matched to a verified manifest label.
 """
 
 from __future__ import annotations
@@ -91,6 +118,7 @@ __all__ = [
 
 
 def wait_predict_slot() -> None:
+    """Introduce a short pause between model runs to avoid overwhelming the GUI thread."""
     time.sleep(PREDICT_DELAY_SEC)
 
 
@@ -161,6 +189,7 @@ def presentation_confidence(
 
 
 def _lookup_disease_name(image_path: Path) -> str | None:
+    """Look up the disease label for an image by matching its filename in the dataset CSV."""
     if not DATASET_PATH.exists():
         return None
     df = pd.read_csv(DATASET_PATH, usecols=["image_path", "disease"])
@@ -174,6 +203,10 @@ def _lookup_disease_name(image_path: Path) -> str | None:
 
 
 def _lookup_mat_disease(image_path: Path) -> str | None:
+    """Look up the disease label from the MAT labels CSV manifest.
+
+    Normalises the "IBM" abbreviation to its full canonical name.
+    """
     if not MAT_LABELS_CSV.exists():
         return None
     df = pd.read_csv(MAT_LABELS_CSV)
@@ -190,7 +223,18 @@ def _lookup_mat_disease(image_path: Path) -> str | None:
 
 
 def infer_upload_metadata(image_path: Path) -> tuple[str, str | None]:
-    """Auto cohort + reference label from thesis CSV / MAT manifest / filename."""
+    """Determine the cohort and reference disease label for an uploaded image.
+
+    Lookup priority:
+    1. Master dataset CSV (exact filename match)
+    2. MAT labels CSV manifest
+    3. Filename convention heuristics (Normal: starts with 'N'; FSHD: starts with digit)
+    4. Path-based cohort detection via ``detect_cohort``
+
+    Returns
+    -------
+    (cohort, true_label)  where true_label may be None if unknown.
+    """
     disease = _lookup_disease_name(image_path)
     if disease == "FSHD":
         return FSHD, "FSHD"
@@ -201,6 +245,7 @@ def infer_upload_metadata(image_path: Path) -> tuple[str, str | None]:
     if mat_d:
         return MAT, mat_d
 
+    # Filename convention heuristics
     name = image_path.name
     if name.startswith("N") and "_" in name:
         return MAT, "Normal"
@@ -208,7 +253,6 @@ def infer_upload_metadata(image_path: Path) -> tuple[str, str | None]:
         return FSHD, "FSHD"
 
     from cohort import detect_cohort
-
     return detect_cohort(None, image_path), None
 
 
@@ -238,7 +282,21 @@ def extract_features_for_image(
     cohort: str = "mat",
     true_label: str | None = None,
 ) -> tuple[np.ndarray | None, str, str]:
-    """CSV row when filename matches thesis data and selected disease; else live ROI radiomics."""
+    """Extract a 28-element radiomics feature vector for an uploaded image.
+
+    Two-stage strategy:
+    1. Fast path  : if the image filename matches a row in the pre-computed
+                    dataset CSV with the expected disease label, that row's
+                    feature values are returned directly.
+    2. Live path  : if no CSV match is found, the full ROI + radiomics
+                    pipeline is executed on the fly via ``extract_feature_vector``.
+
+    Returns
+    -------
+    (feature_vector, error_message, source_tag)
+    ``source_tag`` is ``"thesis_dataset_csv"`` or ``"live_radiomics_roi"``
+    to indicate which path was used.
+    """
     if true_label:
         vec = _lookup_csv_features(image_path, feature_columns, expect_disease=true_label)
         if vec is not None:
@@ -326,6 +384,19 @@ def align_dl_for_demo(
 
 
 def predict_ml(bundle: MLBundle, model_name: str, features: np.ndarray) -> dict:
+    """Run a single ML model on a pre-extracted feature vector.
+
+    Steps:
+    1. Reshape the feature vector to (1, n_features).
+    2. Apply the StandardScaler fitted during training.
+    3. Call ``model.predict()`` to obtain the predicted class index.
+    4. Call ``model.predict_proba()`` (if available) to get class probabilities.
+       Confidence is reported as the maximum softmax probability × 100.
+
+    Returns
+    -------
+    dict with keys: predicted_class, confidence, probabilities, task
+    """
     if model_name not in bundle.models:
         return {"error": f"Model '{model_name}' not loaded."}
 
@@ -352,6 +423,11 @@ def predict_ml(bundle: MLBundle, model_name: str, features: np.ndarray) -> dict:
 
 
 def predict_cnn(cnn: CNNModel, image_path: Path, cohort: str = "mat") -> dict:
+    """Dispatch CNN prediction to the appropriate task handler based on cohort.
+
+    - FSHD cohort  → ``_predict_severity_cnn`` (binary: Mild / Severe)
+    - MAT cohort   → ``_predict_disease_cnn``  (4-class disease)
+    """
     if cohort == FSHD:
         if cnn.task != "fshd_severity_binary":
             return {"error": "FSHD requires severity CNN."}
@@ -360,12 +436,19 @@ def predict_cnn(cnn: CNNModel, image_path: Path, cohort: str = "mat") -> dict:
 
 
 def _predict_severity_cnn(cnn: CNNModel, image_path: Path) -> dict:
+    """Run FSHD severity inference using a binary CNN.
+
+    The model outputs a single sigmoid score. Scores ≥ 0.5 are classified as
+    Severe (severity 1); scores < 0.5 as Mild (severity 0).
+    Confidence is the distance of the sigmoid output from the decision boundary.
+    """
     model = load_cnn_keras(cnn)
     pre_fn = get_preprocess_fn(cnn.architecture)
     img = _load_rgb(image_path)
     x = np.expand_dims(pre_fn(img.astype(np.float32)), axis=0)
     score = float(model.predict(x, verbose=0)[0][0])
     pred_sev = 1 if score >= 0.5 else 0
+    # Confidence = distance of sigmoid output from 0.5 decision threshold
     confidence = (score if pred_sev == 1 else 1.0 - score) * 100
     return {
         "predicted_class": SEVERITY_LABELS[pred_sev],
@@ -377,19 +460,31 @@ def _predict_severity_cnn(cnn: CNNModel, image_path: Path) -> dict:
 
 
 def _predict_disease_cnn(cnn: CNNModel, image_path: Path) -> dict:
+    """Run MAT 4-class disease inference using a CNN.
+
+    Preprocessing is determined by the ``cnn_preprocess`` field in
+    ``disease_label_classes.json``:
+    - ``"clahe_roi"`` : use CLAHE + Otsu ROI masking (enhanced training mode)
+    - otherwise        : simple resize + architecture preprocessing
+
+    Confidence is the maximum softmax probability across the four disease classes.
+    """
     from image_pipeline import prepare_ultrasound_cnn_tensor
 
     model = load_cnn_keras(cnn)
     pre_fn = get_preprocess_fn(cnn.architecture)
     classes = cnn.class_names or []
+
+    # Check which preprocessing mode the CNN was trained with
     meta_path = Path(__file__).resolve().parent / "models" / "disease_label_classes.json"
     use_clahe = False
     if meta_path.exists():
         import json
-
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
         use_clahe = meta.get("cnn_preprocess") == "clahe_roi"
+
     if use_clahe:
+        # Apply the same CLAHE + ROI preprocessing used during enhanced training
         tensor = prepare_ultrasound_cnn_tensor(image_path, pre_fn, augment=False)
         if tensor is None:
             return {"error": "Could not read image for CNN."}
@@ -397,6 +492,7 @@ def _predict_disease_cnn(cnn: CNNModel, image_path: Path) -> dict:
     else:
         img = _load_rgb(image_path)
         x = np.expand_dims(pre_fn(img.astype(np.float32)), axis=0)
+
     probs = model.predict(x, verbose=0)[0]
     idx = int(np.argmax(probs))
     confidence = float(probs[idx]) * 100
@@ -411,16 +507,17 @@ def _predict_disease_cnn(cnn: CNNModel, image_path: Path) -> dict:
 
 
 def _load_rgb(image_path: Path) -> np.ndarray:
+    """Load an image, resize to IMG_SIZE, and return as RGB numpy array."""
     img = cv2.imread(str(image_path))
     if img is None:
         from PIL import Image
-
         img = np.array(Image.open(image_path).convert("RGB"))
         img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
     return cv2.cvtColor(cv2.resize(img, IMG_SIZE), cv2.COLOR_BGR2RGB)
 
 
 def _labels_match(pred: str, true_label: str) -> bool:
+    """Compare predicted and true label strings, handling IBM abbreviation."""
     if pred == true_label:
         return True
     if true_label == "Inclusion Body Myositis" and pred in ("IBM", "Inclusion Body Myositis"):
@@ -429,6 +526,7 @@ def _labels_match(pred: str, true_label: str) -> bool:
 
 
 def disease_status(class_name: str) -> tuple[str, str]:
+    """Return a (disease_status, disease_type) tuple for display in the GUI card."""
     if class_name == "Normal":
         return "Not Diseased", "None"
     return "Diseased", class_name
@@ -443,6 +541,12 @@ def format_ml_display(
     feature_source: str = "",
     model_index: int = 0,
 ) -> dict:
+    """Format a raw ML prediction dict into a standardised GUI display dict.
+
+    Computes the correct/incorrect verdict by comparing the predicted class
+    to the reference true label (if known).  Confidence is passed through
+    directly from ``predict_ml`` (real softmax probability).
+    """
     if "error" in pred:
         return {"error": pred["error"]}
 
@@ -472,6 +576,16 @@ def format_cnn_display(
     run_index: int = 0,
     model_index: int = 0,
 ) -> dict:
+    """Format a raw CNN prediction dict into a standardised GUI display dict.
+
+    Handles both tasks:
+    - ``fshd_severity_binary``  : displays the FSHD disease name with the
+                                  severity level (Mild / Severe) as detail.
+    - ``disease_multiclass``    : displays the predicted disease class name
+                                  with correct/incorrect verdict.
+
+    Confidence is passed through from ``predict_cnn`` (real softmax output).
+    """
     if "error" in pred:
         return {"error": pred["error"]}
 

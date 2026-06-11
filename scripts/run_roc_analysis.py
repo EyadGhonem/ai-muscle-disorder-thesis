@@ -1,5 +1,24 @@
 """
-One-vs-rest ROC curves for all ML models + macro-AUC summary bar chart.
+run_roc_analysis.py
+-------------------
+One-vs-rest ROC (Receiver Operating Characteristic) curve analysis for all ML models.
+
+Input:
+  output/baseline_and_advanced_models/trained_models.pkl  — fitted models + scaler
+  output/final_ultrasound_dataset.csv                     — radiomics features
+
+Processing:
+  1. Recreates the patient-level test split (GroupShuffleSplit, test_size=0.2,
+     random_state=42) — identical split to training.
+  2. Binarises the multi-class labels using a one-vs-rest scheme.
+  3. For each ML model that supports ``predict_proba``, computes per-class ROC
+     curves and their AUC scores.
+  4. Computes the macro-average AUC (unweighted mean across all disease classes).
+
+Output (saved to output/aplus/run_roc_analysis/):
+  roc_<ModelName>.png    — per-class ROC curves with AUC legend
+  roc_summary_bar.png    — bar chart comparing macro-AUC across all models
+
 Run: python scripts/run_roc_analysis.py
 """
 import os

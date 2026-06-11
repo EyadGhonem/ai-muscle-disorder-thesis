@@ -1,7 +1,36 @@
 """
-Part A — Cramér's V dataset bias test (source vs disease)
-Part B — ML learning curves (Random Forest, Gradient Boosting)
-Part C — CNN training history from gui_training_metrics.json
+run_bias_and_learning_curves.py
+--------------------------------
+Dataset bias assessment and model learning curve analysis.
+
+Three analysis stages:
+
+Part A — Cramér's V bias test
+  Tests whether the disease label distribution is statistically associated
+  with the dataset source (ULTRASOUND_LABELD_1 vs MAT_LABELED).
+  A high Cramér's V value (≈ 1.0) would indicate that models may be learning
+  source-specific artefacts rather than true disease patterns.
+  Output: cramer_v_heatmap.png
+
+Part B — ML learning curves
+  Plots validation accuracy as a function of training set size for Random
+  Forest and Gradient Boosting, using 5-fold cross-validation.
+  Helps diagnose whether the models suffer from high bias (underfitting) or
+  high variance (overfitting).
+  Output: learning_curve_<ModelName>.png  (one per model)
+
+Part C — CNN training history
+  Reads validation accuracy history from gui_training_metrics.json
+  (written by train_gui_on_real_ultrasound.py) and plots per-epoch learning
+  curves for all trained CNN architectures.
+  Output: cnn_training_history.png
+
+Input:
+  output/final_ultrasound_dataset.csv        — radiomics dataset with source labels
+  gui_demo/models/gui_training_metrics.json  — CNN training history (Part C only)
+
+Output directory: output/aplus/run_bias_and_learning_curves/
+
 Run: python scripts/run_bias_and_learning_curves.py
 """
 import os

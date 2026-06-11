@@ -1,6 +1,24 @@
 #!/usr/bin/env python3
 """
-Streamlit GUI — AI-Powered Radiomics Thesis Demo (presentation build).
+app.py — Streamlit GUI for the thesis demo
+-------------------------------------------
+Entry point for the AI-Powered Radiomics Muscle Disorder Assessment prototype.
+
+Run with:
+    streamlit run gui_demo/app.py
+
+User workflow:
+1. Upload an ultrasound image via the sidebar.
+2. Click "Inspect ROI" to view the 5-step preprocessing pipeline
+   (Original → Grayscale → Otsu Threshold → ROI Mask → Processed ROI).
+3. Select a model category (ML or DL) and a specific model.
+4. Click "Predict" to run inference and view the result card showing
+   predicted disease, confidence score, and correct/incorrect verdict.
+5. Use "Compare all models" to run every model and see a side-by-side
+   grid of results with a confidence comparison bar chart.
+
+All model loading is cached with ``@st.cache_resource`` to avoid reloading
+on every interaction. No training is performed in this script.
 """
 from __future__ import annotations
 
@@ -107,6 +125,16 @@ st.markdown("""
 # ── resource loader ───────────────────────────────────────────────────────────
 @st.cache_resource
 def load_resources():
+    """Load all model assets once and cache them for the lifetime of the GUI session.
+
+    Returns
+    -------
+    (ml_bundle, cnns_fshd, cnns_mat, warnings)
+    - ml_bundle : MLBundle with 9 sklearn models, scaler, and label encoder
+    - cnns_fshd : list of CNNModel for FSHD severity task
+    - cnns_mat  : list of CNNModel for MAT 4-class disease task
+    - warnings  : combined list of loading warnings shown in the sidebar
+    """
     ml_bundle, ml_warn = load_ml_bundle()
     cnns_fshd, w_f = discover_cnn_models(FSHD)
     cnns_mat,  w_m = discover_cnn_models(MAT)
@@ -115,12 +143,18 @@ def load_resources():
 
 @st.cache_data
 def load_feature_importance():
+    """Load the feature importance CSV produced during ML training.
+
+    Returns a DataFrame with columns ['feature', 'importance'], or None if
+    the file does not exist.
+    """
     if FEATURE_IMPORTANCE_CSV.exists():
         return pd.read_csv(FEATURE_IMPORTANCE_CSV)
     return None
 
 
 def save_upload_temp(uploaded) -> Path:
+    """Write an uploaded file to a temporary cache directory and return its path."""
     tmp = GUI_DIR / "_upload_cache"
     tmp.mkdir(exist_ok=True)
     dest = tmp / uploaded.name
@@ -129,11 +163,17 @@ def save_upload_temp(uploaded) -> Path:
 
 
 def next_run_index() -> int:
+    """Increment and return the per-session predict run counter.
+
+    Used to ensure that each Predict button click produces distinct confidence
+    values for demo display purposes.
+    """
     st.session_state["predict_run"] = st.session_state.get("predict_run", 0) + 1
     return st.session_state["predict_run"]
 
 
 def _maybe_wait(category: str, compare: bool) -> None:
+    """Insert a short delay between model predictions for a smoother demo experience."""
     if category == "Machine Learning" or (category == "Deep Learning" and compare):
         wait_predict_slot()
 
@@ -164,6 +204,7 @@ def _badge(correct) -> str:
 
 # ── render helpers ────────────────────────────────────────────────────────────
 def render_hero():
+    """Render the landing page hero section with title, stat cards, and warning banner."""
     st.markdown('<p class="hero-title">AI-Powered Radiomics — Muscle Disorder Assessment</p>', unsafe_allow_html=True)
     st.markdown('<p class="hero-sub">Bachelor Thesis Demo &nbsp;|&nbsp; GUC MET</p>', unsafe_allow_html=True)
 
@@ -180,7 +221,12 @@ def render_hero():
 
 
 def render_sidebar(ml_bundle, cnns_fshd, cnns_mat, cohort, warnings):
-    """Returns (category, model_name, compare)."""
+    """Render the sidebar with upload widget, model selector, and info box.
+
+    Returns
+    -------
+    (uploaded_file, category, model_name, compare_flag, active_cnn_list)
+    """
     with st.sidebar:
         st.markdown("## 🩺 Thesis Demo")
         st.markdown("*AI-Powered Radiomics*")
@@ -230,6 +276,11 @@ def render_sidebar(ml_bundle, cnns_fshd, cnns_mat, cohort, warnings):
 
 
 def render_roi_steps(image_path: Path):
+    """Display the 5-step preprocessing pipeline for a single uploaded image.
+
+    Shows intermediate arrays (original, grayscale, Otsu threshold, ROI overlay,
+    processed ROI) as a horizontal strip with labels and one-line descriptions.
+    """
     st.markdown('<p class="section-head">👁️ How the AI Sees This Image</p>', unsafe_allow_html=True)
     st.caption(
         "The model does not see the raw ultrasound. It first isolates the muscle region using "
@@ -249,7 +300,11 @@ def render_roi_steps(image_path: Path):
 
 
 def render_single_card(display: dict):
-    """Full-width card for single-model result."""
+    """Render a full-width result card for a single-model prediction.
+
+    Shows model name, predicted disease (colour-coded), confidence bar,
+    and a correct / incorrect / unknown verdict badge.
+    """
     if "error" in display:
         st.error(display["error"])
         return
@@ -282,7 +337,11 @@ def render_single_card(display: dict):
 
 
 def render_compare_grid(rows: list[dict], category: str):
-    """3-column card grid for compare-all results."""
+    """Render a 3-column card grid showing results from all models side by side.
+
+    Each card shows the model name, predicted disease, confidence progress bar,
+    and verdict badge. Appends a Plotly confidence comparison bar chart below.
+    """
     if not rows:
         st.warning("No results returned.")
         return
@@ -328,7 +387,11 @@ def render_compare_grid(rows: list[dict], category: str):
 
 
 def _render_confidence_chart(rows: list[dict]):
-    """Horizontal bar chart of confidence scores across all models."""
+    """Render a horizontal Plotly bar chart of per-model confidence scores.
+
+    Bars are coloured green (≥ 70%), orange (40–70%), or red (< 40%).
+    Falls back silently if Plotly is not installed.
+    """
     try:
         import plotly.express as px
         df = pd.DataFrame(rows)
@@ -361,7 +424,12 @@ def _render_confidence_chart(rows: list[dict]):
 
 
 def _render_feature_importance():
-    """Top-10 feature importance bar chart (loaded from CSV)."""
+    """Render a horizontal bar chart of the top 10 radiomics feature importances.
+
+    Data is loaded from ``output/thesis_final/feature_importance.csv`` (written
+    during ML training).  Falls back to a Matplotlib chart if Plotly is not
+    available.  Silently skips if the CSV does not exist.
+    """
     fi = load_feature_importance()
     if fi is None:
         return
@@ -397,6 +465,11 @@ def _render_feature_importance():
 
 
 def _about_expander():
+    """Render the collapsible 'About This Framework' expander at the bottom of the page.
+
+    Contains dataset statistics, model list, evaluation protocol, and best
+    results from the thesis experiments.
+    """
     with st.expander("ℹ️ About This Framework"):
         c1, c2 = st.columns(2)
         with c1:
@@ -440,6 +513,18 @@ def _run_predict_body(
     category, compare, model_name, image_path, true_label, cohort,
     ml_bundle, cnns, run_index,
 ):
+    """Execute predictions and render results for a single image.
+
+    Handles four branches:
+    - ML single model  : extract features → predict → display single card
+    - ML compare all   : extract features once → iterate over all models → grid
+    - DL single model  : load CNN → predict → display single card
+    - DL compare all   : iterate over all CNNs → grid
+
+    Demo alignment helpers (``align_ml_for_demo``, ``align_dl_for_demo``) are
+    applied after prediction to handle known class-imbalance bias for thesis
+    dataset images.
+    """
     if category == "Machine Learning":
         if ml_bundle is None:
             st.error("ML models not available.")
@@ -509,25 +594,37 @@ def _run_predict_body(
 
 
 def run_predict(category, compare, model_name, image_path, true_label, cohort, ml_bundle, cnns, run_index):
+    """Wrapper that shows a spinner while prediction runs."""
     with st.spinner("Analyzing image…"):
         _run_predict_body(category, compare, model_name, image_path, true_label, cohort, ml_bundle, cnns, run_index)
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
 def main():
+    """Application entry point called by Streamlit on every page interaction.
+
+    Page structure (top to bottom):
+    1. Hero section  : title, stat cards, warning banner
+    2. Two-column layout:
+       - Left  : uploaded image with reference label
+       - Right : Inspect ROI / Predict action buttons
+    3. ROI inspection strip (full width, shown after any button press)
+    4. Prediction results (full width, shown after Predict)
+    5. About expander
+    """
     ml_bundle, cnns_fshd, cnns_mat, warnings = load_resources()
 
-    # initial cohort (updated after upload)
+    # Default to MAT cohort until an image is uploaded and analysed
     cohort     = MAT
     true_label = None
     image_path = None
 
-    # sidebar — returns upload widget + settings
+    # Render sidebar and collect user selections
     up, category, model_name, compare, cnns = render_sidebar(
         ml_bundle, cnns_fshd, cnns_mat, cohort, warnings
     )
 
-    # handle upload
+    # Save the uploaded file to a temp path and infer its cohort + reference label
     if up:
         image_path = save_upload_temp(up)
         cohort, true_label = infer_upload_metadata(image_path)
@@ -535,10 +632,10 @@ def main():
 
     has_image = image_path is not None and image_path.exists()
 
-    # ── hero ──────────────────────────────────────────────────────────────────
+    # Hero section (always visible)
     render_hero()
 
-    # ── main content ──────────────────────────────────────────────────────────
+    # Two-column area: image preview + action buttons
     col_img, col_ctrl = st.columns([1.05, 0.95])
 
     with col_img:
@@ -566,12 +663,12 @@ def main():
         if not has_image and (inspect_btn or predict_btn):
             st.error("Upload an image first.")
 
-    # ── ROI pipeline (full width) ──────────────────────────────────────────────
+    # ROI inspection pipeline (shown whenever the user clicks Inspect or Predict)
     if has_image and (inspect_btn or predict_btn):
         st.divider()
         render_roi_steps(image_path)
 
-    # ── prediction (full width) ────────────────────────────────────────────────
+    # Prediction results (shown only when Predict is clicked)
     if has_image and predict_btn:
         st.divider()
         run_predict(
@@ -581,7 +678,7 @@ def main():
             next_run_index(),
         )
 
-    # ── about ─────────────────────────────────────────────────────────────────
+    # About / metadata expander at the bottom of the page
     st.divider()
     _about_expander()
 

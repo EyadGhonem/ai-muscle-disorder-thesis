@@ -1,21 +1,37 @@
 #!/usr/bin/env python3
 """
-Train all GUI ML + DL models on real ultrasound images only:
-  1. FSHD — data/ULTRASOUND_LABELD_1_FSHD/images (or ULTRASOUND_LABELD_1/images)
-  2. MAT cohort — data/images_extracted_from_mat_LABELED/ (Normal, IBM, Derm, Poly)
+train_gui_on_real_ultrasound.py
+--------------------------------
+Full training pipeline for all ML and DL models used in the thesis GUI.
 
-Does NOT use ULTRASOUND_LABELD_2 tabular-only rows.
+Data sources (real labeled images only):
+  1. FSHD  — data/ULTRASOUND_LABELD_1_FSHD/images  (or ULTRASOUND_LABELD_1/images)
+             ~25,005 PNG frames with Heckmatt severity labels (0 = Mild, 1 = Severe)
+  2. MAT   — data/images_extracted_from_mat_LABELED/
+             ~3,194 PNGs in four disease sub-folders:
+             Normal, IBM, Dermatomyositis, Polymyositis
+
+DOES NOT use ULTRASOUND_LABELD_2 (tabular-only rows, no real images).
+
+Pipeline stages:
+  1. build_manifest()     : scan both image directories → manifest CSV
+  2. extract_features()   : Otsu ROI mask + 28 radiomics features per image
+  3. train_ml_models()    : 9 sklearn models (5-class disease, patient-level split)
+  4. train_dl_*()         : 4 CNNs for FSHD severity (binary) and MAT disease (4-class)
 
 Outputs:
-  output/gui_real_ultrasound_dataset.csv   — radiomics features (ML)
-  output/baseline_and_advanced_models/trained_models.pkl
-  output/dl_models/*_severity.keras         — FSHD binary severity (4 CNNs)
-  gui_demo/models/*_disease.keras           — MAT 4-class disease (4 CNNs)
-  gui_demo/models/gui_training_metrics.json — validation metrics for GUI display
+  output/gui_real_ultrasound_dataset.csv          — radiomics feature table
+  output/baseline_and_advanced_models/
+      trained_models.pkl                          — fitted models, scaler, label encoder
+      gui_ml_training_summary.csv                 — per-model accuracy / F1
+  output/dl_models/*_severity.keras               — FSHD binary severity CNN weights
+  gui_demo/models/*_disease.keras                 — MAT 4-class disease CNN weights
+  gui_demo/models/disease_label_classes.json      — class-index mapping for disease CNNs
+  gui_demo/models/gui_training_metrics.json       — validation metrics read by the GUI
 
-Usage (default = ALL ~28k labeled images, no subsampling):
+Usage:
   python scripts/train_gui_on_real_ultrasound.py --epochs 15
-  python scripts/train_gui_on_real_ultrasound.py --quick   # smoke test only
+  python scripts/train_gui_on_real_ultrasound.py --quick              # 80 imgs/class, 2 epochs
   python scripts/train_gui_on_real_ultrasound.py --ml-only
   python scripts/train_gui_on_real_ultrasound.py --dl-only --epochs 10
   python scripts/train_gui_on_real_ultrasound.py --dl-only --dl-task disease --disease-enhanced --epochs 25
@@ -103,7 +119,13 @@ def _fshd_dir() -> Path | None:
 
 
 def _load_master_lookups() -> tuple[dict, dict, dict]:
-    """filename -> severity, filename -> patient_id, filename -> disease (FSHD rows)."""
+    """Build lookup dicts from the master CSV for FSHD rows only.
+
+    Returns three filename-keyed dicts:
+    - sev : filename → numeric severity (0.0 = Mild, 1.0 = Severe)
+    - pid : filename → patient_id string
+    - dis : filename → disease label string
+    """
     sev, pid, dis = {}, {}, {}
     if not MASTER_PATH.exists():
         return sev, pid, dis
@@ -131,6 +153,14 @@ def _patient_from_fshd_name(name: str) -> str:
 
 
 def build_manifest() -> pd.DataFrame:
+    """Scan FSHD and MAT image directories and return a manifest DataFrame.
+
+    For each image the manifest records: image_path (relative), filepath (absolute),
+    image_name, patient_id, disease label, numeric severity, severity_label string,
+    dataset_source, and cohort identifier ('fshd' or 'mat').
+
+    The manifest is also saved to output/gui_real_ultrasound_manifest.csv.
+    """
     rows = []
     sev_lookup, pid_lookup, _ = _load_master_lookups()
 
@@ -228,7 +258,24 @@ def _feature_columns_from_master() -> list[str]:
 
 
 def extract_features(manifest: pd.DataFrame, max_per_class: int | None) -> pd.DataFrame:
-    """Radiomics on every manifest row (all labeled ultrasound images). Resumes partial CSV."""
+    """Compute 28 radiomics features for every image in the manifest.
+
+    For each image:
+    1. Load BGR → convert to grayscale.
+    2. Generate Otsu + morphological ROI mask via ``build_roi_mask``.
+    3. Compute first-order, GLCM texture, shape, and gradient features.
+    4. Attach the numeric severity value (0 or NaN) from the manifest.
+
+    Supports resuming: if a partial CSV already exists at DATASET_PATH, only
+    images not yet processed are computed and the new records are appended.
+    The CSV is checkpointed every 500 rows to prevent data loss on long runs.
+
+    Parameters
+    ----------
+    manifest      : DataFrame produced by ``build_manifest``
+    max_per_class : if set, randomly subsample to this many images per disease class
+                    before extraction (useful for quick tests)
+    """
     df = manifest.copy()
     if max_per_class and max_per_class > 0:
         parts = []
@@ -285,6 +332,25 @@ def _dataset_covers_manifest(manifest: pd.DataFrame) -> bool:
 
 
 def train_ml_models(df: pd.DataFrame) -> dict:
+    """Train all 9 ML classifiers on the radiomics feature table.
+
+    Patient-level splitting:
+    - Uses ``GroupShuffleSplit`` (test_size=0.2) to ensure that images from the
+      same patient appear only in train OR test, preventing data leakage.
+    - Features are standardised with ``StandardScaler`` fitted on the train split.
+    - A ``LabelEncoder`` maps disease strings to integer indices.
+
+    Models trained: Random Forest, Gradient Boosting, SVM, Logistic Regression,
+    XGBoost, LightGBM, CatBoost, Extra Trees, Stacking Ensemble (RF+GB+XGB).
+
+    Outputs saved:
+    - ``trained_models.pkl`` : dict with 'models', 'scaler', 'results', 'label_encoder'
+    - ``gui_ml_training_summary.csv`` : per-model accuracy and macro F1
+
+    Returns
+    -------
+    dict with key 'ml' mapping model names to {'val_accuracy_pct', 'f1_macro'}
+    """
     print("\n" + "=" * 60)
     print("TRAINING ML MODELS (5-class disease, patient split)")
     print("=" * 60)
@@ -411,6 +477,18 @@ def train_ml_models(df: pd.DataFrame) -> dict:
 
 
 def _build_cnn(architecture: str, num_classes: int):
+    """Build a transfer-learning CNN with a frozen ImageNet backbone.
+
+    Architecture: pre-trained base (ImageNet) → GlobalAveragePooling2D →
+                  Dense(256, ReLU) → Dropout(0.3) → output layer.
+
+    For binary tasks (num_classes=2): sigmoid output, binary crossentropy.
+    For multi-class tasks: softmax output, sparse categorical crossentropy.
+
+    Returns
+    -------
+    (compiled_keras_model, preprocess_input_fn, base_model)
+    """
     from tensorflow import keras
     from tensorflow.keras import layers, models
 
@@ -572,7 +650,22 @@ def _fit_cnn_enhanced_disease(
     epochs: int,
     out_dir: Path,
 ) -> dict:
-    """Two-phase MAT disease training: frozen head → fine-tune top layers, class weights, aug, macro F1."""
+    """Train MAT disease CNNs with an enhanced two-phase fine-tuning strategy.
+
+    Phase 1 (frozen backbone, lr=1e-3, epochs = max(6, total//3)):
+    - Only the classification head is trained.
+    - CLAHE + ROI augmented batches with per-class sample weights.
+
+    Phase 2 (top-N layers unfrozen, lr=1e-4, remaining epochs):
+    - Architecture-specific number of layers unfrozen (30–40 layers).
+    - EarlyStopping (patience=6) and ReduceLROnPlateau applied.
+
+    Class weights are computed via scikit-learn's ``compute_class_weight``
+    to compensate for the class imbalance across the four MAT disease classes.
+
+    This mode is activated with ``--disease-enhanced`` and is recommended for
+    reproducing the best thesis DL results. Use ``--epochs 25``.
+    """
     from tensorflow import keras
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -703,6 +796,11 @@ def _fit_cnn_enhanced_disease(
 
 
 def train_dl_fshd_severity(manifest: pd.DataFrame, architectures: list[str], epochs: int, max_per_class: int | None):
+    """Train 4 CNNs for FSHD severity classification (binary: Mild=0 / Severe=1).
+
+    Only rows with ``cohort == 'fshd'`` and a non-null severity label are used.
+    Models are saved to output/dl_models/ as ``<arch>_severity.keras``.
+    """
     print("\n" + "=" * 60)
     print("TRAINING DL — FSHD severity (binary)")
     print("=" * 60)
@@ -727,6 +825,22 @@ def train_dl_mat_disease(
     max_per_class: int | None,
     enhanced: bool = False,
 ):
+    """Train 4 CNNs for MAT 4-class disease classification.
+
+    Classes: Dermatomyositis, Inclusion Body Myositis, Normal, Polymyositis.
+
+    Also writes disease_label_classes.json (used by inference.py and Grad-CAM
+    scripts to map class indices back to disease name strings).
+
+    The ``cnn_preprocess`` field in the JSON is set to ``"clahe_roi"`` when
+    enhanced training is used, signalling the GUI to apply matching preprocessing
+    at inference time.
+
+    Parameters
+    ----------
+    enhanced : if True, use ``_fit_cnn_enhanced_disease`` (two-phase fine-tuning)
+               otherwise use the simpler ``_fit_cnn`` (frozen backbone)
+    """
     print("\n" + "=" * 60)
     print("TRAINING DL — MAT 4-class disease")
     print("=" * 60)
@@ -757,6 +871,18 @@ def train_dl_mat_disease(
 
 
 def main():
+    """Parse CLI arguments and orchestrate the full training pipeline.
+
+    Execution order (flags permitting):
+    1. build_manifest()                  : scan image directories
+    2. extract_features() / load CSV     : radiomics feature table
+    3. train_ml_models()                 : 9 sklearn classifiers
+    4. train_dl_fshd_severity()          : 4 CNNs for FSHD binary severity
+    5. train_dl_mat_disease()            : 4 CNNs for MAT 4-class disease
+
+    Validation metrics from all stages are merged and written to
+    gui_demo/models/gui_training_metrics.json for use by the GUI.
+    """
     parser = argparse.ArgumentParser(description="Train all GUI models on real ultrasound images")
     parser.add_argument("--quick", action="store_true", help="Small subset, 2 epochs (smoke test)")
     parser.add_argument("--ml-only", action="store_true")

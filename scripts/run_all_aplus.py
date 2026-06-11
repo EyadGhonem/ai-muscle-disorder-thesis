@@ -1,6 +1,29 @@
 """
-Master runner — executes all 5 A+ analysis scripts in sequence.
-Run: python scripts/run_all_aplus.py
+run_all_aplus.py
+----------------
+Master runner that executes all thesis analysis scripts in sequence.
+
+Scripts executed (in order):
+  1. run_shap_analysis.py           — SHAP explainability for tree models
+  2. run_roc_analysis.py            — One-vs-rest ROC curves + macro-AUC summary
+  3. run_gradcam.py                 — Grad-CAM heatmaps for EfficientNetB0
+  4. run_tsne.py                    — t-SNE and PCA feature space visualisations
+  5. run_bias_and_learning_curves.py — Cramér's V bias test + ML learning curves
+
+Each script is launched as a subprocess with a 1-hour timeout.
+After all scripts finish, a summary table is printed showing:
+  - Script name
+  - Status (PASSED / FAILED / TIMEOUT / ERROR)
+  - Elapsed time in seconds
+  - Output directory path
+
+All figure outputs land under output/aplus/<script_name>/.
+
+Usage:
+  python scripts/run_all_aplus.py
+
+Prerequisite: trained_models.pkl and final_ultrasound_dataset.csv must exist.
+Run train_gui_on_real_ultrasound.py first if they are missing.
 """
 import os
 import sys

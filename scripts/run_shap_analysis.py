@@ -1,6 +1,30 @@
 """
-SHAP analysis for tree-based ML models.
-Outputs: beeswarm, bar, and waterfall plots per model.
+run_shap_analysis.py
+--------------------
+SHAP (SHapley Additive exPlanations) analysis for tree-based ML models.
+
+This script provides model-agnostic explainability for the three best-supported
+tree models: Random Forest, XGBoost, and Extra Trees.
+
+Input:
+  output/baseline_and_advanced_models/trained_models.pkl  — fitted models + scaler
+  output/final_ultrasound_dataset.csv                     — radiomics features
+
+Processing:
+  1. Recreates the same patient-level test split used during training
+     (GroupShuffleSplit, test_size=0.2, random_state=42).
+  2. For each tree model, fits a ``shap.TreeExplainer`` and computes SHAP values
+     on the scaled test set.
+  3. Handles both 2D (binary/regression) and 3D (multi-class) SHAP value arrays.
+
+Output (per model, saved to output/aplus/run_shap_analysis/<ModelName>/):
+  shap_beeswarm.png            — feature-level SHAP dot plot (top 20 features)
+  shap_bar.png                 — mean |SHAP| horizontal bar chart (top 20)
+  shap_waterfall_<class>.png   — individual sample waterfall for up to 3 classes
+
+Note: GradientBoostingClassifier is excluded because SHAP's TreeExplainer does
+not support sklearn's multi-class GradientBoostingClassifier.
+
 Run: python scripts/run_shap_analysis.py
 """
 import sys
@@ -75,6 +99,7 @@ X_test_df = pd.DataFrame(X_test_sc, columns=feature_cols)
 print(f"Test set: {len(X_test_df)} samples")
 
 # ── SHAP per model ───────────────────────────────────────────────────────────
+# Iterate over supported tree models and produce three explainability plots each
 for model_name in TREE_MODELS:
     if model_name not in models:
         print(f"  [{model_name}] not in pkl — skipping")

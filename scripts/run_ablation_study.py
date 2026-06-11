@@ -1,5 +1,36 @@
 """
-Ablation study: Random Forest accuracy across 5 feature-group configurations.
+run_ablation_study.py
+---------------------
+Feature ablation study for the radiomics feature set.
+
+Systematically removes one feature group at a time to quantify each group's
+contribution to classification accuracy, providing evidence for feature
+selection decisions in the thesis.
+
+Feature groups:
+  - first_order : mean, std, min, max, median, Q25, Q75, skewness, kurtosis, entropy
+  - texture     : GLCM (glcm_* columns)
+  - shape       : area, perimeter, circularity, aspect_ratio, extent, solidity,
+                  equivalent_diameter
+  - gradient    : gradient_* columns
+
+Five configurations evaluated (all using Random Forest, balanced class weight):
+  1. All features (baseline)
+  2. Without gradient features
+  3. Without texture (GLCM) features
+  4. Without shape features
+  5. Without first-order statistics
+
+For each configuration the same patient-level GroupShuffleSplit (test_size=0.2,
+random_state=42) is applied, and accuracy + macro F1 are reported.
+
+Input:
+  output/final_ultrasound_dataset.csv  — radiomics features with disease labels
+
+Output (saved to output/aplus/run_ablation_study/):
+  ablation_results.csv    — per-configuration accuracy and macro F1
+  ablation_bar.png        — bar chart comparing accuracy across configurations
+
 Run: python scripts/run_ablation_study.py
 """
 import os

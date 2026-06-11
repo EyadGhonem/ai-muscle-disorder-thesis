@@ -1,6 +1,29 @@
 """
-McNemar's test for pairwise model comparison.
-Pairs: SVM vs RF, SVM vs GB, GB vs RF.
+run_mcnemar_test.py
+--------------------
+Pairwise McNemar's statistical test for ML model comparison.
+
+McNemar's test determines whether two classifiers make statistically different
+errors on the same test set. It operates on a 2×2 contingency table of
+(model A correct / incorrect) × (model B correct / incorrect).
+
+Model pairs tested:
+  - SVM vs Random Forest
+  - SVM vs Gradient Boosting
+  - Gradient Boosting vs Random Forest
+
+For each pair:
+  1. Obtain predictions from both models on the shared patient-level test split.
+  2. Build the 2×2 contingency table of correct/incorrect agreement.
+  3. Run McNemar's test (chi-squared approximation, exact=False).
+  4. Report chi² statistic, p-value, and significance at α = 0.05.
+
+Input:
+  output/baseline_and_advanced_models/trained_models.pkl  — fitted models + scaler
+  output/final_ultrasound_dataset.csv                     — radiomics features
+
+Output: printed summary table (no saved figures).
+
 Run: python scripts/run_mcnemar_test.py
 """
 import os
