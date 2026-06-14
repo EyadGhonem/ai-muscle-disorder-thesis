@@ -354,7 +354,7 @@ def render_splash():
     # Center the button using columns
     _, btn_col, _ = st.columns([2, 1.2, 2])
     with btn_col:
-        if st.button("Start MyoScan Analysis", type="primary", use_container_width=True):
+        if st.button("Start MyoScan Analysis", type="primary", width="stretch"):
             _go("welcome")
 
     st.markdown("""
@@ -456,7 +456,7 @@ def render_welcome_page():
 
     _, start_col, _ = st.columns([2, 1.5, 2])
     with start_col:
-        if st.button("Go to Demo & Analysis", type="primary", use_container_width=True):
+        if st.button("Go to Demo & Analysis", type="primary", width="stretch"):
             _go("demo")
 
 
@@ -532,7 +532,7 @@ def render_workflow_page():
         "Key Metric":  ["Visual ROI quality", "Macro F1 (patient-level)",
                         "Val accuracy", "Top-20 features / spatial heatmap"],
     })
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.dataframe(df, width="stretch", hide_index=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -611,7 +611,7 @@ def render_demo_page(ml_bundle, cnns_fshd, cnns_mat):
         cols = st.columns(5)
         for col, key, (title, desc) in zip(cols, keys, ROI_STEPS):
             with col:
-                st.image(pipe[key], use_container_width=True, clamp=True)
+                st.image(pipe[key], width="stretch", clamp=True)
                 st.markdown(f'<p class="roi-lbl">{title}</p>', unsafe_allow_html=True)
                 st.markdown(f'<p class="roi-dsc">{desc}</p>', unsafe_allow_html=True)
 
@@ -676,7 +676,7 @@ def _render_image_selector():
     if image_path and Path(image_path).exists():
         pr, info = st.columns([1, 2.5])
         with pr:
-            st.image(str(image_path), use_container_width=True)
+            st.image(str(image_path), width="stretch")
         with info:
             if true_label:
                 color = _disease_color(true_label)
@@ -720,7 +720,7 @@ def _render_features_tab(image_path, ml_bundle, true_label, cohort):
 
     filt = st.selectbox("Filter", ["All"] + sorted(df["Group"].unique().tolist()), key="feat_filt")
     display = df if filt == "All" else df[df["Group"] == filt]
-    st.dataframe(display, use_container_width=True, hide_index=True, height=380)
+    st.dataframe(display, width="stretch", hide_index=True, height=380)
 
 
 def _render_prediction_tab(image_path, true_label, cohort, ml_bundle, cnns):
@@ -739,7 +739,7 @@ def _render_prediction_tab(image_path, true_label, cohort, ml_bundle, cnns):
     with ctrl3:
         compare = st.checkbox("Compare all", key="pred_compare")
 
-    if st.button("Run Prediction", type="primary", use_container_width=True):
+    if st.button("Run Prediction", type="primary", width="stretch"):
         run_index = st.session_state.get("predict_run", 0) + 1
         st.session_state["predict_run"] = run_index
         preds = []
@@ -850,7 +850,7 @@ def _render_prediction_tab(image_path, true_label, cohort, ml_bundle, cnns):
             fig.update_layout(showlegend=False, height=max(220, len(df)*42),
                               margin=dict(l=10,r=30,t=10,b=10), xaxis=dict(range=[0,110]),
                               plot_bgcolor="white", paper_bgcolor="white")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
     except Exception:
         pass
 
@@ -908,9 +908,9 @@ def _render_explainability_tab():
                 fig.update_layout(showlegend=False, height=340, coloraxis_showscale=False,
                                   margin=dict(l=10,r=40,t=10,b=10),
                                   plot_bgcolor="white", paper_bgcolor="white")
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
             except Exception:
-                st.dataframe(top10, use_container_width=True)
+                st.dataframe(top10, width="stretch")
 
         # Explicitly note: DL explanations do NOT apply
         st.markdown("""
@@ -938,7 +938,7 @@ def _render_explainability_tab():
             if grid_path.exists():
                 st.image(str(grid_path),
                          caption=f"Grad-CAM overview grid (pre-computed for EfficientNetB0 — thesis test set)",
-                         use_container_width=True)
+                         width="stretch")
             # Individual class heatmaps
             gc_files = [f for f in sorted(gradcam_dir.glob("gradcam_*.png")) if "grid" not in f.name]
             if gc_files:
@@ -946,7 +946,7 @@ def _render_explainability_tab():
                 sel   = st.selectbox("Class heatmap", names, key="xai_gc_sel")
                 gc_p  = gradcam_dir / f"gradcam_{sel.replace(' ','_')}.png"
                 if gc_p.exists():
-                    st.image(str(gc_p), caption=f"Grad-CAM — {sel}", use_container_width=True)
+                    st.image(str(gc_p), caption=f"Grad-CAM — {sel}", width="stretch")
         else:
             st.markdown(f"""
 <div class="ms-card" style="color:#667085">
@@ -960,7 +960,7 @@ def _render_explainability_tab():
         cm_path = APLUS_DIR / "cnn_confusion_matrix" / "cnn_confusion_matrix.png"
         if cm_path.exists():
             st.markdown("**CNN Confusion Matrix** — patient-level test set")
-            st.image(str(cm_path), use_container_width=True)
+            st.image(str(cm_path), width="stretch")
 
         # Explicitly note: ML SHAP does NOT apply to DL
         st.markdown("""
@@ -978,16 +978,16 @@ def _show_shap_for_model(shap_model_dir: Path, model_label: str):
     tabs = st.tabs(["Bar Chart", "Beeswarm", "Waterfall"])
     with tabs[0]:
         p = shap_model_dir / "shap_bar.png"
-        st.image(str(p), caption=f"Mean |SHAP| — {model_label}", use_container_width=True) if p.exists() else st.info("Not found.")
+        st.image(str(p), caption=f"Mean |SHAP| — {model_label}", width="stretch") if p.exists() else st.info("Not found.")
     with tabs[1]:
         p = shap_model_dir / "shap_beeswarm.png"
-        st.image(str(p), caption=f"Beeswarm — {model_label}", use_container_width=True) if p.exists() else st.info("Not found.")
+        st.image(str(p), caption=f"Beeswarm — {model_label}", width="stretch") if p.exists() else st.info("Not found.")
     with tabs[2]:
         wfs = sorted(shap_model_dir.glob("shap_waterfall_*.png"))
         if wfs:
             sel = st.selectbox("Class", [f.stem.replace("shap_waterfall_","") for f in wfs], key=f"wf_{model_label}")
             p   = shap_model_dir / f"shap_waterfall_{sel}.png"
-            if p.exists(): st.image(str(p), use_container_width=True)
+            if p.exists(): st.image(str(p), width="stretch")
         else:
             st.info("Waterfall plots not found.")
 
@@ -1019,7 +1019,7 @@ def render_dashboard_page():
                 disp[col] = disp[col].apply(lambda x: f"{x:.2f}%")
             elif "f1" in col.lower():
                 disp[col] = disp[col].apply(lambda x: f"{x:.4f}")
-        st.dataframe(disp, use_container_width=True, hide_index=True)
+        st.dataframe(disp, width="stretch", hide_index=True)
     else:
         st.caption("ML summary CSV not found. Train models first.")
 
@@ -1039,8 +1039,8 @@ def render_dashboard_page():
                     st.markdown(f"**{md.name.replace('_',' ')}**")
                     c1, c2 = st.columns(2)
                     bp, beep = md/"shap_bar.png", md/"shap_beeswarm.png"
-                    if bp.exists(): c1.image(str(bp), use_container_width=True)
-                    if beep.exists(): c2.image(str(beep), use_container_width=True)
+                    if bp.exists(): c1.image(str(bp), width="stretch")
+                    if beep.exists(): c2.image(str(beep), width="stretch")
         fi = load_feature_importance()
         if fi is not None:
             top10 = fi.nlargest(10,"importance").sort_values("importance")
@@ -1050,7 +1050,7 @@ def render_dashboard_page():
                              color="importance", color_continuous_scale=["#FDECEF","#8B1E3F"])
                 fig.update_layout(showlegend=False, height=340, coloraxis_showscale=False,
                                   margin=dict(l=10,r=40,t=10,b=10), plot_bgcolor="white", paper_bgcolor="white")
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
             except Exception: pass
     with dash_tabs[2]:
         _show_gallery(APLUS_DIR / "run_gradcam", "gradcam_*.png", "Grad-CAM")
@@ -1061,7 +1061,7 @@ def render_dashboard_page():
     with dash_tabs[5]:
         p = APLUS_DIR / "cnn_confusion_matrix" / "cnn_confusion_matrix.png"
         if p.exists():
-            st.image(str(p), caption="EfficientNetB0 — normalised confusion matrix (patient-level test split)", use_container_width=True)
+            st.image(str(p), caption="EfficientNetB0 — normalised confusion matrix (patient-level test split)", width="stretch")
         else:
             st.info("Run scripts/run_cnn_confusion_matrix.py to generate.")
 
@@ -1077,7 +1077,7 @@ def _show_gallery(folder: Path, pattern: str, title: str):
     cols = st.columns(2)
     for i, p in enumerate(imgs):
         with cols[i % 2]:
-            st.image(str(p), caption=p.stem.replace("_"," "), use_container_width=True)
+            st.image(str(p), caption=p.stem.replace("_"," "), width="stretch")
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -1143,7 +1143,7 @@ def render_comparison_page():
         "MyoScan AI": ["3/3", "3/3", "1/3", "1/3", "3/3"],
         "ChatGPT":    ["2/3", "2/3", "1/3", "1/3", "2/3"],
     }
-    st.dataframe(pd.DataFrame(class_data), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(class_data), width="stretch", hide_index=True)
 
     # Load CSV if available and show filled-in data
     if COMPARISON_CSV.exists():
@@ -1155,7 +1155,7 @@ def render_comparison_page():
             show_cols = ["case_id", "ground_truth", "myoscan_prediction", "myoscan_confidence",
                          "chatgpt_prediction", "chatgpt_confidence"]
             show_cols = [c for c in show_cols if c in df.columns]
-            st.dataframe(df[show_cols], use_container_width=True, hide_index=True)
+            st.dataframe(df[show_cols], width="stretch", hide_index=True)
         else:
             st.caption("Detailed per-case comparison CSV is available. Fill in ChatGPT responses to see the full table.")
 
@@ -1238,9 +1238,9 @@ def render_report_page():
     # Generate / Clear buttons
     g1, g2, _ = st.columns([1.2, 1, 3])
     with g1:
-        gen = st.button("Generate Report", type="primary", use_container_width=True)
+        gen = st.button("Generate Report", type="primary", width="stretch")
     with g2:
-        if st.button("Clear", use_container_width=True):
+        if st.button("Clear", width="stretch"):
             for k in ["report_html","report_txt","report_pdf"]:
                 st.session_state.pop(k, None)
             st.rerun()
@@ -1264,17 +1264,17 @@ def render_report_page():
     with d1:
         st.download_button("Download HTML", data=report_html,
                            file_name=f"MyoScan_{ts}.html", mime="text/html",
-                           use_container_width=True)
+                           width="stretch")
     with d2:
         st.download_button("Download TXT", data=st.session_state.get("report_txt",""),
                            file_name=f"MyoScan_{ts}.txt", mime="text/plain",
-                           use_container_width=True)
+                           width="stretch")
     with d3:
         pdf_bytes = st.session_state.get("report_pdf")
         if pdf_bytes:
             st.download_button("Download PDF", data=pdf_bytes,
                                file_name=f"MyoScan_{ts}.pdf", mime="application/pdf",
-                               use_container_width=True)
+                               width="stretch")
         else:
             st.caption("PDF export requires reportlab." if not REPORTLAB_OK else "PDF not generated — click Generate Report again.")
 
@@ -1358,14 +1358,14 @@ def _render_a4_preview(data: dict):
     if ip and Path(ip).exists():
         img_col, prep_col = st.columns([1, 2])
         with img_col:
-            st.image(str(ip), caption="Uploaded image", use_container_width=True)
+            st.image(str(ip), caption="Uploaded image", width="stretch")
         with prep_col:
             if pipe:
                 cols5 = st.columns(5)
                 for col, key, (title, _) in zip(cols5, ["original","grayscale","threshold","roi_overlay","processed"], ROI_STEPS):
                     if key in pipe:
                         with col:
-                            st.image(pipe[key], use_container_width=True, clamp=True)
+                            st.image(pipe[key], width="stretch", clamp=True)
                             st.caption(title)
             else:
                 st.caption("Run Preprocessing sub-tab in Demo to see pipeline images.")
