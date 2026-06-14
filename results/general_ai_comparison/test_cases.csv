@@ -1,16 +1,16 @@
-case_id,image_path,ground_truth,myoscan_model,myoscan_prediction,myoscan_confidence
-1,general_ai_test_cases\Normal\N008_20151013153636_idx0229.png,Normal,Gradient Boosting,Normal,79.6%
-2,general_ai_test_cases\Normal\N021_20160107163403_idx0740.png,Normal,Gradient Boosting,Normal,55.3%
-3,general_ai_test_cases\Normal\N031_2016021614341705_idx1137.png,Normal,Gradient Boosting,Normal,59.7%
-4,general_ai_test_cases\IBM\M017_20160107165757_idx0572.png,Inclusion Body Myositis,Gradient Boosting,Inclusion Body Myositis,47.5%
-5,general_ai_test_cases\IBM\M034_2016022418290401_idx1256.png,Inclusion Body Myositis,Gradient Boosting,Inclusion Body Myositis,68.1%
-6,general_ai_test_cases\IBM\M071_2016081610135108_idx2744.png,Inclusion Body Myositis,Gradient Boosting,Inclusion Body Myositis,72.3%
-7,general_ai_test_cases\Dermatomyositis\M001_20150922134651_idx0031.png,Dermatomyositis,Gradient Boosting,Dermatomyositis,60.0%
-8,general_ai_test_cases\Dermatomyositis\M049_2016032810561319_idx1893.png,Dermatomyositis,Gradient Boosting,Normal,79.1%
-9,general_ai_test_cases\Dermatomyositis\M067_2016072712234211_idx2573.png,Dermatomyositis,Gradient Boosting,Inclusion Body Myositis,49.9%
-10,general_ai_test_cases\Polymyositis\M002_20151016175732_idx0067.png,Polymyositis,Gradient Boosting,Dermatomyositis,38.8%
-11,general_ai_test_cases\Polymyositis\M010_20151103112254_idx0313.png,Polymyositis,Gradient Boosting,Polymyositis,30.8%
-12,general_ai_test_cases\Polymyositis\M018_2016010717002322_idx0607.png,Polymyositis,Gradient Boosting,Normal,76.8%
-13,general_ai_test_cases\FSHD\00319_011_00_2.png,FSHD,Gradient Boosting,FSHD,100.0%
-14,general_ai_test_cases\FSHD\00076_008_01_3.png,FSHD,Gradient Boosting,FSHD,100.0%
-15,general_ai_test_cases\FSHD\02244_008_01_1.png,FSHD,Gradient Boosting,FSHD,100.0%
+case_id,image_path,ground_truth,myoscan_model,myoscan_prediction,myoscan_confidence,chatgpt_prediction,chatgpt_confidence,chatgpt_reasoning,claude_prediction,claude_confidence,claude_reasoning,gemini_prediction,gemini_confidence,gemini_reasoning,notes
+1,general_ai_test_cases\Normal\N008_20151013153636_idx0229.png,Normal,Gradient Boosting,Normal,79.6%,,,,,,,,,,
+2,general_ai_test_cases\Normal\N021_20160107163403_idx0740.png,Normal,Gradient Boosting,Normal,55.3%,,,,,,,,,,
+3,general_ai_test_cases\Normal\N031_2016021614341705_idx1137.png,Normal,Gradient Boosting,Normal,59.7%,,,,,,,,,,
+4,general_ai_test_cases\IBM\M017_20160107165757_idx0572.png,Inclusion Body Myositis,Gradient Boosting,Inclusion Body Myositis,47.5%,,,,,,,,,,
+5,general_ai_test_cases\IBM\M034_2016022418290401_idx1256.png,Inclusion Body Myositis,Gradient Boosting,Inclusion Body Myositis,68.1%,,,,,,,,,,
+6,general_ai_test_cases\IBM\M071_2016081610135108_idx2744.png,Inclusion Body Myositis,Gradient Boosting,Inclusion Body Myositis,72.3%,,,,,,,,,,
+7,general_ai_test_cases\Dermatomyositis\M001_20150922134651_idx0031.png,Dermatomyositis,Gradient Boosting,Dermatomyositis,60.0%,,,,,,,,,,
+8,general_ai_test_cases\Dermatomyositis\M049_2016032810561319_idx1893.png,Dermatomyositis,Gradient Boosting,Normal,79.1%,,,,,,,,,,
+9,general_ai_test_cases\Dermatomyositis\M067_2016072712234211_idx2573.png,Dermatomyositis,Gradient Boosting,Inclusion Body Myositis,49.9%,,,,,,,,,,
+10,general_ai_test_cases\Polymyositis\M002_20151016175732_idx0067.png,Polymyositis,Gradient Boosting,Dermatomyositis,38.8%,,,,,,,,,,
+11,general_ai_test_cases\Polymyositis\M010_20151103112254_idx0313.png,Polymyositis,Gradient Boosting,Polymyositis,30.8%,,,,,,,,,,
+12,general_ai_test_cases\Polymyositis\M018_2016010717002322_idx0607.png,Polymyositis,Gradient Boosting,Normal,76.8%,,,,,,,,,,
+13,general_ai_test_cases\FSHD\00319_011_00_2.png,FSHD,Gradient Boosting,FSHD,100.0%,,,,,,,,,,
+14,general_ai_test_cases\FSHD\00076_008_01_3.png,FSHD,Gradient Boosting,FSHD,100.0%,,,,,,,,,,
+15,general_ai_test_cases\FSHD\02244_008_01_1.png,FSHD,Gradient Boosting,FSHD,100.0%,,,,,,,,,,
