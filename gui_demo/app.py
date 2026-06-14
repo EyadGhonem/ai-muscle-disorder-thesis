@@ -79,10 +79,10 @@ ROI_STEPS = [
 ]
 
 PAGES = [
-    ("welcome",    "1", "Welcome"),
+    ("welcome",    "1", "Home"),
     ("workflow",   "2", "Workflow"),
-    ("demo",       "3", "Demo & Analysis"),
-    ("dashboard",  "4", "Results Dashboard"),
+    ("demo",       "3", "Analysis"),
+    ("dashboard",  "4", "Results"),
     ("comparison", "5", "AI Comparison"),
     ("report",     "6", "Report"),
 ]
@@ -92,7 +92,7 @@ st.set_page_config(
     page_title="MyoScan AI",
     page_icon="🩺",
     layout="wide",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded",
 )
 
 # ── premium CSS ────────────────────────────────────────────────────────────
@@ -138,23 +138,43 @@ html, body, [class*="css"] { font-family: 'Inter', -apple-system, sans-serif !im
 }
 
 /* ── navigation sidebar ── */
-section[data-testid="stSidebar"] { background: #FFFFFF !important; }
+section[data-testid="stSidebar"] {
+  background: #FFFFFF !important;
+  min-width: 240px !important;
+  width: 240px !important;
+}
+section[data-testid="stSidebar"] > div:first-child {
+  min-width: 240px !important;
+  width: 240px !important;
+}
 section[data-testid="stSidebar"] .stButton > button {
-  text-align: left !important; background: transparent !important;
-  border: none !important; border-left: 3px solid transparent !important;
-  border-radius: 0 8px 8px 0 !important; color: #374151 !important;
-  font-weight: 500 !important; padding: 9px 14px 9px 16px !important;
-  width: 100% !important; font-size: .875rem !important;
-  box-shadow: none !important; line-height: 1.4 !important;
+  text-align: left !important;
+  background: transparent !important;
+  border: none !important;
+  border-left: 3px solid transparent !important;
+  border-radius: 0 8px 8px 0 !important;
+  color: #374151 !important;
+  font-weight: 500 !important;
+  padding: 9px 14px 9px 16px !important;
+  width: 100% !important;
+  font-size: .875rem !important;
+  box-shadow: none !important;
+  line-height: 1.5 !important;
+  white-space: nowrap !important;
+  overflow: visible !important;
+  min-height: unset !important;
 }
 section[data-testid="stSidebar"] .stButton > button:hover {
-  background: #FDECEF !important; color: #8B1E3F !important;
+  background: #FDECEF !important;
+  color: #8B1E3F !important;
   border-left-color: #8B1E3F !important;
 }
 /* Active nav item via sibling marker */
 section[data-testid="stSidebar"] .nav-active + div .stButton > button {
-  background: #FDECEF !important; color: #8B1E3F !important;
-  border-left: 3px solid #8B1E3F !important; font-weight: 700 !important;
+  background: #FDECEF !important;
+  color: #8B1E3F !important;
+  border-left: 3px solid #8B1E3F !important;
+  font-weight: 700 !important;
 }
 
 /* ── Streamlit metric ── */
@@ -436,8 +456,8 @@ def render_welcome_page():
     st.markdown('<div class="ms-section">How to Use This Demo</div>', unsafe_allow_html=True)
     steps_html = ""
     step_labels = [
-        ("3", "Demo & Analysis", "Select a sample image, run preprocessing, extract features, run prediction"),
-        ("4", "Results Dashboard", "Browse pre-computed thesis evaluation metrics and figures"),
+        ("3", "Analysis", "Select a sample image, run preprocessing, extract radiomics features, run prediction"),
+        ("4", "Results", "Browse pre-computed thesis evaluation metrics and figures"),
         ("5", "AI Comparison", "View the exploratory comparison between MyoScan AI and general-purpose AI"),
         ("6", "Report", "Generate a hospital-style clinical report and download as HTML"),
     ]
@@ -456,7 +476,7 @@ def render_welcome_page():
 
     _, start_col, _ = st.columns([2, 1.5, 2])
     with start_col:
-        if st.button("Go to Demo & Analysis", type="primary", width="stretch"):
+        if st.button("Go to Analysis", type="primary", width="stretch"):
             _go("demo")
 
 
@@ -585,8 +605,8 @@ def _build_sample_catalog() -> dict[str, list[Path]]:
 
 def render_demo_page(ml_bundle, cnns_fshd, cnns_mat):
     """Main interactive demo page."""
-    st.markdown('<div class="ms-page-title">Demo & Analysis</div>', unsafe_allow_html=True)
-    st.markdown('<div class="ms-page-sub">Select an image, inspect preprocessing, extract features, run predictions, review explainability.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="ms-page-title">Analysis</div>', unsafe_allow_html=True)
+    st.markdown('<div class="ms-page-sub">Select an image, run preprocessing, extract radiomics features, run prediction, review explainability.</div>', unsafe_allow_html=True)
 
     _render_image_selector()
 
@@ -900,9 +920,12 @@ def get_explainability_assets(model_name, model_type):
                     break
 
     elif model_type == "DL":
-        if gradcam_root.exists() and any(gradcam_root.glob("*.png")):
-            result["gradcam_dir"]       = gradcam_root
-            result["gradcam_available"] = True
+        # Live per-image Grad-CAM is not computed in this demo for any CNN.
+        # Pre-computed thesis Grad-CAM exists only for EfficientNetB0 evaluation.
+        # It must NOT appear in Section A (current-case explanation) for any model,
+        # including EfficientNetB0, because it is a thesis overview — not per-image.
+        # Section B (Overall Thesis) renders it separately with a clear label.
+        pass  # gradcam_available stays False
 
     return result
 
@@ -1001,40 +1024,28 @@ def _render_explainability_tab():
 """, unsafe_allow_html=True)
 
     elif model_type == "DL":
-        if assets["gradcam_available"]:
-            gradcam_dir = assets["gradcam_dir"]
-            st.markdown(f"**Grad-CAM Spatial Attribution &mdash; pre-computed thesis CNN results**")
-            st.caption(
-                "Grad-CAM highlights image regions most influential to the CNN prediction. "
-                "Figures below were generated during thesis evaluation (EfficientNetB0, test set). "
-                "Live per-image Grad-CAM is not computed in this demo."
-            )
-            grid_path = gradcam_dir / "gradcam_grid.png"
-            if grid_path.exists():
-                st.image(str(grid_path),
-                         caption="Grad-CAM overview — EfficientNetB0, thesis test set",
-                         width="stretch")
-            gc_files = [f for f in sorted(gradcam_dir.glob("gradcam_*.png"))
-                        if "grid" not in f.name]
-            if gc_files:
-                names = [f.stem.replace("gradcam_", "").replace("_", " ") for f in gc_files]
-                sel   = st.selectbox("Class heatmap", names, key="xai_gc_sel")
-                gc_p  = gradcam_dir / f"gradcam_{sel.replace(' ', '_')}.png"
-                if gc_p.exists():
-                    st.image(str(gc_p), caption=f"Grad-CAM — {sel}", width="stretch")
-        else:
-            st.markdown('''
-<div class="ms-card" style="color:#667085">
-  Grad-CAM figures not found. Run: <code>python scripts/run_gradcam.py</code>
-</div>
-''', unsafe_allow_html=True)
-
+        # Section A: current-case Grad-CAM is NEVER shown for any CNN.
+        # Live per-image Grad-CAM requires gradient hooks during inference,
+        # which are not enabled in this demo. Pre-computed thesis Grad-CAM
+        # (EfficientNetB0 only) is in Section B below.
+        mn_display = model_name or "the selected CNN"
+        st.markdown(
+            f'<div style="background:#FEF3C7;border:1.5px solid #D97706;border-radius:8px;'
+            f'padding:12px 16px;margin-bottom:10px;font-size:.85rem">'
+            f'<strong>Current-case Grad-CAM is not available for <em>{mn_display}</em>.</strong><br>'
+            f'Live per-image Grad-CAM requires CNN gradient hooks during inference, which is not '
+            f'enabled in this demo.<br>'
+            f'<span style="color:#667085;font-size:.78rem">'
+            f'Pre-computed thesis Grad-CAM (EfficientNetB0 only) is shown in the '
+            f'<strong>Overall Thesis Explainability Results</strong> section below.</span>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
         st.markdown("""
 <div style="background:#F6F7F9;border:1px solid #E5E7EB;border-radius:8px;
             padding:10px 16px;margin-top:4px;font-size:.82rem;color:#667085">
-  SHAP feature importance applies to <strong>ML radiomics models</strong> only.
-  The current prediction uses a CNN &mdash; SHAP values in the thesis dashboard
-  are from ML model training and do not explain this CNN prediction.
+  SHAP radiomics plots apply to <strong>ML radiomics models</strong> only and do not
+  explain this CNN prediction.
 </div>
 """, unsafe_allow_html=True)
 
@@ -1107,8 +1118,8 @@ def _show_shap_for_model(shap_model_dir: Path, model_label: str):
 # ══════════════════════════════════════════════════════════════════════════
 
 def render_dashboard_page():
-    st.markdown('<div class="ms-page-title">Results Dashboard</div>', unsafe_allow_html=True)
-    st.markdown('<div class="ms-page-sub">Overall thesis evaluation results — pre-computed on held-out patient-level test splits.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="ms-page-title">Results</div>', unsafe_allow_html=True)
+    st.markdown('<div class="ms-page-sub">Pre-computed thesis evaluation metrics and figures from held-out patient-level test splits.</div>', unsafe_allow_html=True)
 
     # Top KPI cards
     st.markdown('<div class="ms-section">Key Results</div>', unsafe_allow_html=True)
@@ -1354,11 +1365,11 @@ def _collect_report_data() -> dict:
 def render_report_page():
     """A4-style hospital report with HTML download (stable)."""
     st.markdown('<div class="ms-page-title">Clinical Decision-Support Report</div>', unsafe_allow_html=True)
-    st.markdown('<div class="ms-page-sub">Auto-generated from the current analysis session. Complete the Demo tab first.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="ms-page-sub">Auto-generated from the current analysis session. Complete the Analysis tab first.</div>', unsafe_allow_html=True)
 
     image_path = st.session_state.get("active_image_path")
     if not image_path or not Path(image_path).exists():
-        st.markdown('<div class="disclaimer">No image loaded. Go to <strong>Demo & Analysis</strong>, select an image and run a prediction, then return here.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="disclaimer">No image loaded. Go to <strong>Analysis</strong>, select an image and run a prediction, then return here.</div>', unsafe_allow_html=True)
         return
 
     # Generate / Clear buttons
