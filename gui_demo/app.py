@@ -150,11 +150,9 @@ st.markdown("""
 .conf-high   { background:#c6f6d5; color:#276749; padding:3px 12px; border-radius:99px; font-weight:700; font-size:.9rem; }
 .conf-medium { background:#fefcbf; color:#744210; padding:3px 12px; border-radius:99px; font-weight:700; font-size:.9rem; }
 .conf-low    { background:#fed7d7; color:#9b2c2c; padding:3px 12px; border-radius:99px; font-weight:700; font-size:.9rem; }
-/* ── report box ── */
-.report-box {
-    background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px;
-    padding:1.2rem 1.4rem; font-family:monospace; font-size:.82rem;
-    white-space:pre-wrap; color:#2d3748; max-height:520px; overflow-y:auto;
+/* ── report tab brand accent ── */
+.report-brand-bar {
+    background:#8B1E3F; height:4px; border-radius:2px; margin-bottom:.5rem;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -1202,220 +1200,924 @@ def _show_figure_gallery(folder: Path, pattern: str, title: str):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  TAB 5 — REPORT
+#  TAB 5 — REPORT  (hospital-style clinical layout)
 # ══════════════════════════════════════════════════════════════════════════════
 
+# Brand palette for the clinical report
+BRAND = {
+    "burgundy":    "#8B1E3F",
+    "navy":        "#1F2937",
+    "soft_grey":   "#F6F7F9",
+    "white":       "#FFFFFF",
+    "light_red":   "#FDECEF",
+    "mid_grey":    "#6B7280",
+    "border":      "#E5E7EB",
+    "green":       "#065F46",
+    "green_bg":    "#D1FAE5",
+    "amber":       "#92400E",
+    "amber_bg":    "#FEF3C7",
+    "red_text":    "#991B1B",
+}
+
+
+def _img_array_to_b64(arr) -> str:
+    """Convert a numpy image array to a base64-encoded PNG data URI for HTML embedding."""
+    try:
+        from PIL import Image
+        import base64
+        import io
+        # Ensure uint8 range
+        if arr.dtype != np.uint8:
+            arr = np.clip(arr, 0, 255).astype(np.uint8)
+        # Handle grayscale (2-D) and RGB (3-D) arrays
+        if arr.ndim == 2:
+            img = Image.fromarray(arr, mode="L")
+        else:
+            img = Image.fromarray(arr, mode="RGB")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+        return f"data:image/png;base64,{b64}"
+    except Exception:
+        return ""
+
+
+def _img_file_to_b64(path: Path) -> str:
+    """Convert an image file on disk to a base64-encoded data URI."""
+    try:
+        import base64
+        suffix = path.suffix.lower().lstrip(".")
+        mime   = "jpeg" if suffix in ("jpg", "jpeg") else "png"
+        b64    = base64.b64encode(path.read_bytes()).decode("utf-8")
+        return f"data:image/{mime};base64,{b64}"
+    except Exception:
+        return ""
+
+
+def _report_data_from_session() -> dict:
+    """Collect all relevant data from session_state into a single dict for report generation."""
+    image_path  = st.session_state.get("active_image_path")
+    true_label  = st.session_state.get("active_true_label")
+    preds       = st.session_state.get("last_predictions", [])
+    feats       = st.session_state.get("last_features")
+    feat_cols   = st.session_state.get("last_feat_cols", [])
+    feat_source = st.session_state.get("last_feat_source", "")
+    pipe        = st.session_state.get("last_pipe")       # dict of numpy arrays from ROI pipeline
+
+    # Derive image metadata if an image is loaded
+    img_size  = "Not available"
+    img_mode  = "Not available"
+    sample_cat = st.session_state.get("sample_category", "Not provided")
+    if sample_cat == "— Upload your own image —":
+        sample_cat = "User upload"
+
+    if image_path and Path(image_path).exists():
+        try:
+            from PIL import Image as PILImage
+            with PILImage.open(image_path) as im:
+                img_size = f"{im.width} × {im.height} px"
+                img_mode = im.mode
+        except Exception:
+            pass
+
+    return {
+        "image_path":   image_path,
+        "true_label":   true_label,
+        "preds":        preds,
+        "feats":        feats,
+        "feat_cols":    feat_cols,
+        "feat_source":  feat_source,
+        "pipe":         pipe,
+        "img_size":     img_size,
+        "img_mode":     img_mode,
+        "sample_cat":   sample_cat,
+        "now":          datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "case_id":      Path(image_path).stem if image_path else "—",
+    }
+
+
+# ── inline Streamlit report renderer ─────────────────────────────────────────
+
 def render_report_tab():
-    """Generate and download a clinical-style text report from session state."""
+    """Render the hospital-style clinical report tab with inline preview and download options."""
 
-    st.markdown("### 📋 Auto-Generated Decision-Support Report")
-    st.caption(
-        "This report summarises the image analysis session. "
-        "It is generated automatically from the Demo tab results."
+    st.markdown(
+        '<p class="hero-title" style="font-size:1.6rem">📋 Clinical Decision-Support Report</p>',
+        unsafe_allow_html=True,
     )
+    st.caption("Generated automatically from the Demo tab session. Complete the Demo tab first.")
 
-    image_path   = st.session_state.get("active_image_path")
-    true_label   = st.session_state.get("active_true_label")
-    preds        = st.session_state.get("last_predictions", [])
-    feats        = st.session_state.get("last_features")
-    feat_cols    = st.session_state.get("last_feat_cols", [])
-    feat_source  = st.session_state.get("last_feat_source", "")
-
-    has_image = image_path is not None and Path(image_path).exists()
-    has_preds = bool(preds)
+    image_path = st.session_state.get("active_image_path")
+    has_image  = image_path is not None and Path(image_path).exists()
 
     if not has_image:
-        st.info("Go to the **🔬 Demo** tab, select an image and run a prediction, then return here to generate the report.")
+        st.markdown(
+            '<div class="warn-banner">👆 No image loaded. Go to the <strong>🔬 Demo</strong> tab, '
+            'select an image and run a prediction, then return here.</div>',
+            unsafe_allow_html=True,
+        )
         return
 
-    # Generate button
-    if st.button("📄 Generate Report", type="primary"):
-        report_text = _build_report(image_path, true_label, preds, feats, feat_cols, feat_source)
-        st.session_state["generated_report"] = report_text
+    # Generate button row
+    g1, g2, g3 = st.columns([1.2, 1, 3])
+    with g1:
+        gen_btn = st.button("📄 Generate Report", type="primary", use_container_width=True)
+    with g2:
+        if st.button("🗑️ Clear Report", use_container_width=True):
+            st.session_state.pop("report_html", None)
+            st.session_state.pop("report_txt", None)
+            st.rerun()
 
-    # Display report
-    report_text = st.session_state.get("generated_report")
-    if not report_text:
-        st.info("Click **Generate Report** to create the report.")
+    if gen_btn:
+        data = _report_data_from_session()
+        st.session_state["report_html"] = _build_html_report(data)
+        st.session_state["report_txt"]  = _build_report_txt(data)
+
+    report_html = st.session_state.get("report_html")
+    report_txt  = st.session_state.get("report_txt")
+
+    if not report_html:
+        st.info("Click **Generate Report** above to produce the clinical report.")
         return
 
-    # Preview
-    st.markdown('<div class="report-box">' + report_text.replace("\n", "<br>") + "</div>", unsafe_allow_html=True)
+    # ── Download buttons ───────────────────────────────────────────────────────
+    ts   = datetime.datetime.now().strftime("%Y%m%d_%H%M")
+    d1, d2, _ = st.columns([1, 1, 2])
+    with d1:
+        st.download_button(
+            label="⬇️ Download as HTML",
+            data=report_html,
+            file_name=f"MyoScan_Report_{ts}.html",
+            mime="text/html",
+            use_container_width=True,
+        )
+    with d2:
+        st.download_button(
+            label="⬇️ Download as TXT",
+            data=report_txt,
+            file_name=f"MyoScan_Report_{ts}.txt",
+            mime="text/plain",
+            use_container_width=True,
+        )
 
     st.divider()
 
-    # Download buttons
-    dl1, dl2, _ = st.columns([1, 1, 2])
-    with dl1:
-        st.download_button(
-            label="⬇️ Download as TXT",
-            data=report_text,
-            file_name=f"MyoScan_Report_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.txt",
-            mime="text/plain",
-        )
-    with dl2:
-        # Simple HTML report for browser-based viewing
-        html_report = _build_html_report(report_text)
-        st.download_button(
-            label="⬇️ Download as HTML",
-            data=html_report,
-            file_name=f"MyoScan_Report_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.html",
-            mime="text/html",
-        )
+    # ── Inline styled preview (Streamlit-native HTML rendering) ───────────────
+    data = _report_data_from_session()
+    _render_inline_report(data)
 
 
-def _build_report(image_path, true_label, preds, feats, feat_cols, feat_source) -> str:
-    """Build a structured text report from session state data."""
-    now    = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    lines  = []
-    sep    = "=" * 70
-    thin   = "-" * 70
+def _render_inline_report(data: dict):
+    """Render the full hospital-style report inline using st.markdown blocks."""
 
-    lines += [
-        sep,
-        "  MyoScan AI — Decision-Support Report",
-        "  AI-Powered Radiomics for Muscle Disorder Assessment",
-        sep,
-        f"  Generated : {now}",
-        f"  System    : MyoScan AI v1.0 (Bachelor Thesis — GUC MET)",
-        thin,
-        "",
-    ]
+    now        = data["now"]
+    image_path = data["image_path"]
+    true_label = data["true_label"]
+    preds      = data["preds"]
+    feats      = data["feats"]
+    feat_cols  = data["feat_cols"]
+    pipe       = data["pipe"]
+    B          = BRAND   # shorthand for colour palette
 
-    # Section 1: Image information
-    lines += [
-        "1. IMAGE INFORMATION",
-        thin,
-        f"   File name : {Path(image_path).name}",
-        f"   Reference label (if known) : {true_label or 'Unknown'}",
-        f"   Feature source : {feat_source or 'N/A'}",
-        "",
-    ]
+    # ── A. HEADER ─────────────────────────────────────────────────────────────
+    st.markdown(f"""
+<div style="background:{B['burgundy']};border-radius:14px 14px 0 0;padding:20px 28px 16px;margin-bottom:0">
+  <div style="display:flex;align-items:center;gap:18px">
+    <svg width="52" height="52" viewBox="0 0 52 52" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="26" cy="26" r="26" fill="rgba(255,255,255,0.15)"/>
+      <path d="M8 26 Q13 16 18 26 Q23 36 28 26 Q33 16 38 26 Q41 20 44 26"
+            stroke="white" stroke-width="2.8" stroke-linecap="round" fill="none"/>
+      <circle cx="26" cy="26" r="4" fill="white" opacity="0.9"/>
+    </svg>
+    <div>
+      <div style="color:white;font-size:1.75rem;font-weight:900;letter-spacing:-.5px;
+                  font-family:'Segoe UI',sans-serif">MyoScan AI</div>
+      <div style="color:rgba(255,255,255,0.82);font-size:.88rem;margin-top:2px">
+        Explainable Ultrasound-Based Decision Support Report
+      </div>
+    </div>
+  </div>
+</div>
+<div style="background:{B['navy']};border-radius:0;padding:9px 28px;display:flex;gap:32px;
+            flex-wrap:wrap;margin-bottom:0">
+  <span style="color:{B['soft_grey']};font-size:.8rem;font-family:monospace">
+    📅 {now}
+  </span>
+  <span style="color:{B['soft_grey']};font-size:.8rem;font-family:monospace">
+    📁 {Path(image_path).name if image_path else '—'}
+  </span>
+  <span style="color:{B['soft_grey']};font-size:.8rem;font-family:monospace">
+    🔬 MyoScan AI v1.0 &nbsp;|&nbsp; GUC MET Bachelor Thesis
+  </span>
+</div>
+""", unsafe_allow_html=True)
 
-    # Section 2: Preprocessing
-    lines += [
-        "2. PREPROCESSING PIPELINE",
-        thin,
-        "   Step 1 : Load image (BGR) → convert to RGB",
-        "   Step 2 : Convert to grayscale",
-        "   Step 3 : Gaussian blur → Otsu threshold",
-        "   Step 4 : Morphological closing (3 iter) + opening (2 iter)",
-        "   Step 5 : Largest contour → ROI binary mask",
-        "   Step 6 : Normalize masked region → extract features",
-        "",
-    ]
+    # ── B. CASE SUMMARY ───────────────────────────────────────────────────────
+    _report_section_header("B", "Case / Image Summary")
+    st.markdown(f"""
+<div style="background:{B['soft_grey']};border:1px solid {B['border']};border-radius:10px;
+            padding:16px 22px;display:grid;grid-template-columns:1fr 1fr;gap:8px 24px">
+  {_kv("File name",     Path(image_path).name if image_path else "Not provided")}
+  {_kv("Image size",    data['img_size'])}
+  {_kv("Image mode",    data['img_mode'])}
+  {_kv("Sample category", data['sample_cat'])}
+  {_kv("Reference label", true_label or "Not provided")}
+  {_kv("Feature source",  data['feat_source'] or "Not available")}
+</div>
+""", unsafe_allow_html=True)
 
-    # Section 3: Extracted features
-    if feats is not None and feat_cols:
-        lines += ["3. EXTRACTED RADIOMICS FEATURES (28 features)", thin]
-        fi    = load_feature_importance()
-        top5  = set(fi.nlargest(5, "importance")["feature"].tolist()) if fi is not None else set()
-        for col, val in zip(feat_cols[:28], feats[:28]):
-            star = "  ⭐" if col in top5 else ""
-            lines.append(f"   {col:<40} {float(val):>10.4f}{star}")
-        lines.append("")
+    # ── C. PREPROCESSING SUMMARY ──────────────────────────────────────────────
+    _report_section_header("C", "Preprocessing Summary")
+    st.markdown(f"""
+<div style="background:{B['white']};border:1px solid {B['border']};border-radius:10px;
+            padding:14px 22px;margin-bottom:8px">
+  <p style="margin:0 0 10px;color:{B['navy']};font-size:.9rem">
+    The uploaded ultrasound image was automatically processed through the following pipeline:
+  </p>
+  <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;text-align:center;
+              font-size:.75rem;color:{B['navy']};font-weight:600">
+    <div style="background:{B['soft_grey']};border-radius:8px;padding:8px 4px">
+      1. Load<br><span style="font-weight:400;color:{B['mid_grey']}">BGR→RGB</span>
+    </div>
+    <div style="background:{B['soft_grey']};border-radius:8px;padding:8px 4px">
+      2. Grayscale<br><span style="font-weight:400;color:{B['mid_grey']}">convert</span>
+    </div>
+    <div style="background:{B['soft_grey']};border-radius:8px;padding:8px 4px">
+      3. Otsu<br><span style="font-weight:400;color:{B['mid_grey']}">threshold</span>
+    </div>
+    <div style="background:{B['light_red']};border-radius:8px;padding:8px 4px">
+      4. ROI Mask<br><span style="font-weight:400;color:{B['mid_grey']}">contour</span>
+    </div>
+    <div style="background:{B['light_red']};border-radius:8px;padding:8px 4px">
+      5. Processed<br><span style="font-weight:400;color:{B['mid_grey']}">ROI region</span>
+    </div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+    # Preprocessing image strip (reuse existing pipeline arrays if available)
+    if pipe is not None:
+        st.caption("Preprocessing pipeline output images:")
+        cols = st.columns(5)
+        step_labels = ["Original", "Grayscale", "Threshold", "ROI Overlay", "Processed ROI"]
+        step_keys   = ["original", "grayscale", "threshold", "roi_overlay", "processed"]
+        for col, key, label in zip(cols, step_keys, step_labels):
+            if key in pipe:
+                with col:
+                    st.image(pipe[key], use_container_width=True, clamp=True)
+                    st.caption(label)
     else:
-        lines += ["3. EXTRACTED FEATURES", thin, "   Features not available (run Demo → Features tab first).", ""]
+        st.caption("Run the **Preprocessing** sub-tab in the Demo section to see pipeline images.")
 
-    # Section 4: Model predictions
-    lines += ["4. MODEL PREDICTIONS", thin]
+    # ── D. RADIOMICS FEATURE SUMMARY ─────────────────────────────────────────
+    _report_section_header("D", "Radiomics Feature Summary")
+    fi     = load_feature_importance()
+    top5   = fi.nlargest(5, "importance") if fi is not None else None
+    top5_s = set(top5["feature"].tolist()) if top5 is not None else set()
+
+    if feats is not None and feat_cols:
+        n_feats = len([v for v in feats if v == v])   # non-NaN count
+        st.markdown(f"""
+<div style="background:{B['white']};border:1px solid {B['border']};border-radius:10px;
+            padding:14px 22px;margin-bottom:8px">
+  <p style="margin:0 0 10px;color:{B['navy']};font-size:.9rem">
+    <strong>{n_feats} radiomics features</strong> extracted from the isolated ROI region.
+    Categories: GLCM texture &nbsp;|&nbsp; Shape descriptors &nbsp;|&nbsp;
+    Gradient statistics &nbsp;|&nbsp; First-order statistics.
+  </p>
+""", unsafe_allow_html=True)
+
+        # Key features table (top 5 important + their current values)
+        if top5 is not None:
+            key_rows = ""
+            for _, row in top5.iterrows():
+                feat_name = row["feature"]
+                importance = f"{row['importance']:.4f}"
+                # Look up current value from feats if available
+                val_str = "—"
+                if feat_name in feat_cols:
+                    idx = feat_cols.index(feat_name)
+                    if idx < len(feats):
+                        val_str = f"{float(feats[idx]):.4f}"
+                key_rows += f"""
+<tr>
+  <td style="padding:6px 12px;font-weight:600;color:{B['burgundy']}">{feat_name}</td>
+  <td style="padding:6px 12px;text-align:center">{importance}</td>
+  <td style="padding:6px 12px;text-align:center;font-family:monospace">{val_str}</td>
+</tr>"""
+            st.markdown(f"""
+  <table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:.83rem">
+    <thead>
+      <tr style="background:{B['light_red']};color:{B['navy']}">
+        <th style="padding:7px 12px;text-align:left">Feature</th>
+        <th style="padding:7px 12px;text-align:center">Importance (SHAP)</th>
+        <th style="padding:7px 12px;text-align:center">Current Value</th>
+      </tr>
+    </thead>
+    <tbody>{key_rows}</tbody>
+  </table>
+</div>
+""", unsafe_allow_html=True)
+        else:
+            st.markdown(f"""
+  <p style="color:{B['mid_grey']};font-size:.83rem">
+    Feature importance data not available. Run <code>scripts/run_shap_analysis.py</code>.
+  </p></div>""", unsafe_allow_html=True)
+    else:
+        st.markdown(f"""
+<div style="background:{B['soft_grey']};border:1px solid {B['border']};border-radius:10px;
+            padding:14px 22px;color:{B['mid_grey']};font-size:.88rem">
+  Features not yet extracted. Visit the <strong>Features</strong> sub-tab in the Demo section.
+</div>
+""", unsafe_allow_html=True)
+
+    # ── E. MODEL PREDICTION SUMMARY ───────────────────────────────────────────
+    _report_section_header("E", "Model Prediction Summary")
+    valid_preds = [p for p in preds if "error" not in p and "predicted_class" in p]
+
+    if valid_preds:
+        # Derive final class + agreement
+        classes_pred  = [p["predicted_class"] for p in valid_preds]
+        most_common   = max(set(classes_pred), key=classes_pred.count)
+        agreement_cnt = classes_pred.count(most_common)
+        avg_conf      = np.nanmean([p.get("confidence", float("nan")) for p in valid_preds])
+        conf_level    = "High" if avg_conf >= 70 else ("Medium" if avg_conf >= 40 else "Low")
+        color_map     = {"High": (B["green_bg"], B["green"]),
+                         "Medium": (B["amber_bg"], B["amber"]),
+                         "Low": (B["light_red"], B["red_text"])}
+        cl_bg, cl_fg  = color_map[conf_level]
+
+        # Final result highlight box
+        disease_c = _disease_color(most_common)
+        st.markdown(f"""
+<div style="border:2px solid {disease_c};border-radius:12px;padding:16px 24px;
+            margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;
+            flex-wrap:wrap;gap:12px;background:{B['white']}">
+  <div>
+    <div style="font-size:.75rem;color:{B['mid_grey']};text-transform:uppercase;letter-spacing:.8px">
+      Suggested Diagnosis
+    </div>
+    <div style="font-size:1.8rem;font-weight:900;color:{disease_c};margin-top:2px">
+      {most_common}
+    </div>
+    <div style="font-size:.82rem;color:{B['mid_grey']};margin-top:4px">
+      {agreement_cnt} out of {len(valid_preds)} models agree
+    </div>
+  </div>
+  <div style="text-align:right">
+    <div style="font-size:.75rem;color:{B['mid_grey']};text-transform:uppercase;letter-spacing:.8px">
+      Confidence Level
+    </div>
+    <div style="background:{cl_bg};color:{cl_fg};border-radius:99px;padding:4px 18px;
+                font-weight:800;font-size:1rem;margin-top:4px;display:inline-block">
+      {conf_level} &nbsp;·&nbsp; {avg_conf:.1f}%
+    </div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+        # Per-model results table
+        model_rows = ""
+        for p in valid_preds:
+            conf_v  = p.get("confidence", float("nan"))
+            conf_s  = f"{conf_v:.1f}%" if not np.isnan(float(conf_v)) else "N/A"
+            branch  = "ML" if p.get("task", "") == "disease_multiclass" else "DL"
+            correct = p.get("correct")
+            verdict_bg  = B["green_bg"]  if correct is True  else (B["light_red"] if correct is False else B["soft_grey"])
+            verdict_col = B["green"]     if correct is True  else (B["red_text"]  if correct is False else B["mid_grey"])
+            verdict_txt = "Correct"      if correct is True  else ("Incorrect"    if correct is False else "Unknown")
+            cls_c = _disease_color(p.get("predicted_class", ""))
+            model_rows += f"""
+<tr style="border-bottom:1px solid {B['border']}">
+  <td style="padding:8px 12px;font-weight:600">{p.get('selected_model', p.get('Model','—'))}</td>
+  <td style="padding:8px 12px;text-align:center">
+    <span style="background:{B['soft_grey']};border-radius:4px;padding:2px 8px;font-size:.8rem">{branch}</span>
+  </td>
+  <td style="padding:8px 12px;color:{cls_c};font-weight:700">{p.get('predicted_class','—')}</td>
+  <td style="padding:8px 12px;text-align:center;font-family:monospace">{conf_s}</td>
+  <td style="padding:8px 12px;text-align:center">
+    <span style="background:{verdict_bg};color:{verdict_col};border-radius:4px;
+                 padding:2px 8px;font-size:.78rem;font-weight:600">{verdict_txt}</span>
+  </td>
+</tr>"""
+        st.markdown(f"""
+<div style="border:1px solid {B['border']};border-radius:10px;overflow:hidden;margin-bottom:8px">
+<table style="width:100%;border-collapse:collapse;font-size:.84rem">
+  <thead>
+    <tr style="background:{B['navy']};color:{B['soft_grey']}">
+      <th style="padding:9px 12px;text-align:left">Model</th>
+      <th style="padding:9px 12px;text-align:center">Branch</th>
+      <th style="padding:9px 12px;text-align:left">Prediction</th>
+      <th style="padding:9px 12px;text-align:center">Confidence</th>
+      <th style="padding:9px 12px;text-align:center">Verdict</th>
+    </tr>
+  </thead>
+  <tbody>{model_rows}</tbody>
+</table>
+</div>
+""", unsafe_allow_html=True)
+    else:
+        st.markdown(f"""
+<div style="background:{B['soft_grey']};border:1px solid {B['border']};border-radius:10px;
+            padding:14px 22px;color:{B['mid_grey']};font-size:.88rem">
+  No predictions available. Visit the <strong>Prediction</strong> sub-tab in the Demo section
+  and click <strong>Run Prediction</strong>.
+</div>
+""", unsafe_allow_html=True)
+
+    # ── F. EXPLAINABILITY NOTES ───────────────────────────────────────────────
+    _report_section_header("F", "Explainability Notes")
+
+    # Top features text
+    top_feat_text = "gradient_mean, glcm_homogeneity, gradient_max, perimeter, area"
+    if top5 is not None:
+        top_feat_text = ", ".join(top5["feature"].tolist())
+
+    shap_available = (APLUS_DIR / "run_shap_analysis").exists()
+    shap_note = ("Pre-computed SHAP analysis is available — see the Explainability sub-tab "
+                 "for bar charts and beeswarm plots.") if shap_available else \
+                "SHAP analysis not available. Run scripts/run_shap_analysis.py to generate it."
+
+    st.markdown(f"""
+<div style="background:{B['white']};border:1px solid {B['border']};border-radius:10px;
+            padding:14px 22px;margin-bottom:8px">
+  <p style="margin:0 0 10px;color:{B['navy']};font-size:.9rem">
+    <strong>Feature Attribution (ML — SHAP):</strong><br>
+    The ML prediction was primarily influenced by the following radiomics descriptors:
+    <span style="color:{B['burgundy']};font-weight:600">{top_feat_text}</span>.
+    These capture texture homogeneity, edge response intensity, and morphological
+    properties of the isolated muscle region.
+  </p>
+  <p style="margin:0 0 10px;color:{B['mid_grey']};font-size:.83rem">{shap_note}</p>
+  <p style="margin:0;color:{B['navy']};font-size:.9rem">
+    <strong>Spatial Attribution (CNN — Grad-CAM):</strong><br>
+    For deep learning predictions, Grad-CAM highlights the muscle region pixels that
+    most strongly activated the final convolutional layer.
+    {"Pre-computed Grad-CAM figures are available in the Explainability sub-tab." if (APLUS_DIR / "run_gradcam").exists() else "Grad-CAM not generated. Run scripts/run_gradcam.py."}
+  </p>
+</div>
+""", unsafe_allow_html=True)
+
+    # ── G. CLINICAL DISCLAIMER FOOTER ─────────────────────────────────────────
+    st.markdown(f"""
+<div style="background:{B['light_red']};border:2px solid {B['burgundy']};border-radius:10px;
+            padding:16px 22px;margin-top:6px">
+  <div style="display:flex;align-items:flex-start;gap:12px">
+    <span style="font-size:1.5rem">⚠️</span>
+    <div>
+      <div style="font-weight:800;color:{B['burgundy']};font-size:.95rem;margin-bottom:6px">
+        Clinical Disclaimer
+      </div>
+      <p style="margin:0;color:{B['navy']};font-size:.86rem;line-height:1.6">
+        This report is generated by <strong>MyoScan AI</strong>, a research prototype for
+        <strong>decision-support purposes only</strong>. It is not a standalone clinical diagnosis
+        and must be reviewed by a qualified clinician. All results are derived from an experimental
+        system developed as part of a bachelor thesis at the German University in Cairo (GUC),
+        Faculty of Media Engineering and Technology.
+      </p>
+    </div>
+  </div>
+</div>
+<div style="text-align:center;color:{B['mid_grey']};font-size:.76rem;margin-top:8px;
+            font-family:monospace;padding-bottom:4px">
+  MyoScan AI &nbsp;·&nbsp; GUC MET Bachelor Thesis &nbsp;·&nbsp; Eyad Ghonem
+  &nbsp;·&nbsp; {now}
+</div>
+""", unsafe_allow_html=True)
+
+
+def _report_section_header(letter: str, title: str):
+    """Render a branded section header divider for the inline report."""
+    B = BRAND
+    st.markdown(f"""
+<div style="display:flex;align-items:center;gap:10px;margin:18px 0 10px">
+  <div style="background:{B['burgundy']};color:white;border-radius:6px;
+              padding:3px 10px;font-weight:700;font-size:.82rem;min-width:26px;text-align:center">
+    {letter}
+  </div>
+  <div style="font-size:1rem;font-weight:700;color:{B['navy']}">{title}</div>
+  <div style="flex:1;height:1px;background:{B['border']}"></div>
+</div>
+""", unsafe_allow_html=True)
+
+
+def _kv(label: str, value: str) -> str:
+    """Return an HTML key-value pair div for the case summary grid."""
+    B = BRAND
+    return (
+        f'<div><span style="font-size:.75rem;color:{B["mid_grey"]};text-transform:uppercase;'
+        f'letter-spacing:.6px">{label}</span><br>'
+        f'<span style="font-size:.88rem;font-weight:600;color:{B["navy"]}">{value}</span></div>'
+    )
+
+
+# ── downloadable HTML report ──────────────────────────────────────────────────
+
+def _build_html_report(data: dict) -> str:
+    """Build a complete standalone HTML clinical report document with embedded images.
+
+    All images (preprocessing pipeline steps) are base64-encoded inline so the
+    HTML file is self-contained and can be opened in any browser without a server.
+    """
+    B           = BRAND
+    now         = data["now"]
+    image_path  = data["image_path"]
+    true_label  = data["true_label"]
+    preds       = data["preds"]
+    feats       = data["feats"]
+    feat_cols   = data["feat_cols"]
+    pipe        = data["pipe"]
+
+    # Compute agreement stats
     valid_preds = [p for p in preds if "error" not in p and "predicted_class" in p]
     if valid_preds:
-        for p in valid_preds:
-            conf      = p.get("confidence", float("nan"))
-            conf_str  = f"{conf:.1f}%" if conf == conf and not np.isnan(conf) else "N/A"
-            conf_lvl  = "High" if conf >= 70 else ("Medium" if conf >= 40 else "Low")
-            correct   = p.get("correct")
-            verdict   = "Correct" if correct is True else ("Incorrect" if correct is False else "Unknown")
-            lines.append(
-                f"   {p.get('selected_model', 'Model'):<30} "
-                f"Predicted: {p.get('predicted_class','—'):<28} "
-                f"Conf: {conf_str:>7}  ({conf_lvl})  Verdict: {verdict}"
+        classes_pred  = [p["predicted_class"] for p in valid_preds]
+        most_common   = max(set(classes_pred), key=classes_pred.count)
+        agreement_cnt = classes_pred.count(most_common)
+        avg_conf      = np.nanmean([p.get("confidence", float("nan")) for p in valid_preds])
+        conf_level    = "High" if avg_conf >= 70 else ("Medium" if avg_conf >= 40 else "Low")
+        disease_c     = _disease_color(most_common)
+    else:
+        most_common   = "Not available"
+        agreement_cnt = 0
+        avg_conf      = float("nan")
+        conf_level    = "N/A"
+        disease_c     = B["mid_grey"]
+
+    # Feature importance top-5
+    fi   = load_feature_importance()
+    top5 = fi.nlargest(5, "importance") if fi is not None else None
+
+    # Base64 preprocessing images
+    pipe_imgs_html = ""
+    if pipe is not None:
+        step_keys   = ["original", "grayscale", "threshold", "roi_overlay", "processed"]
+        step_labels = ["Original", "Grayscale", "Threshold", "ROI Overlay", "Processed ROI"]
+        cells = ""
+        for key, label in zip(step_keys, step_labels):
+            if key in pipe:
+                b64 = _img_array_to_b64(pipe[key])
+                if b64:
+                    cells += (
+                        f'<td style="text-align:center;padding:6px">'
+                        f'<img src="{b64}" style="width:130px;height:100px;object-fit:contain;'
+                        f'border-radius:6px;border:1px solid {B["border"]}"><br>'
+                        f'<span style="font-size:.72rem;color:{B["mid_grey"]}">{label}</span></td>'
+                    )
+        if cells:
+            pipe_imgs_html = f'<table style="margin:10px 0"><tr>{cells}</tr></table>'
+
+    # Feature rows HTML
+    feat_rows = ""
+    if feats is not None and feat_cols and top5 is not None:
+        for _, row in top5.iterrows():
+            fn = row["feature"]
+            imp = f"{row['importance']:.4f}"
+            val = "—"
+            if fn in feat_cols:
+                idx = feat_cols.index(fn)
+                if idx < len(feats):
+                    val = f"{float(feats[idx]):.4f}"
+            feat_rows += (
+                f'<tr><td style="padding:6px 12px;font-weight:600;color:{B["burgundy"]}">{fn}</td>'
+                f'<td style="padding:6px 12px;text-align:center">{imp}</td>'
+                f'<td style="padding:6px 12px;text-align:center;font-family:monospace">{val}</td></tr>'
             )
-        lines.append("")
 
-        # Agreement summary
-        classes_predicted = [p["predicted_class"] for p in valid_preds]
-        most_common       = max(set(classes_predicted), key=classes_predicted.count)
-        agreement_count   = classes_predicted.count(most_common)
-        avg_conf          = np.nanmean([p.get("confidence", float("nan")) for p in valid_preds])
-        conf_level        = "High" if avg_conf >= 70 else ("Medium" if avg_conf >= 40 else "Low")
+    # Model prediction rows HTML
+    pred_rows = ""
+    for p in valid_preds:
+        conf_v = p.get("confidence", float("nan"))
+        conf_s = f"{conf_v:.1f}%" if not np.isnan(float(conf_v)) else "N/A"
+        branch = "ML" if p.get("task", "") == "disease_multiclass" else "DL"
+        cls    = p.get("predicted_class", "—")
+        cls_c  = _disease_color(cls)
+        pred_rows += (
+            f'<tr style="border-bottom:1px solid {B["border"]}">'
+            f'<td style="padding:7px 12px;font-weight:600">{p.get("selected_model", p.get("Model","—"))}</td>'
+            f'<td style="padding:7px 12px;text-align:center">{branch}</td>'
+            f'<td style="padding:7px 12px;color:{cls_c};font-weight:700">{cls}</td>'
+            f'<td style="padding:7px 12px;text-align:center;font-family:monospace">{conf_s}</td>'
+            f'</tr>'
+        )
 
-        lines += [
-            "   Summary:",
-            f"   - Model agreement : {agreement_count}/{len(valid_preds)} models agree",
-            f"   - Suggested class : {most_common}",
-            f"   - Average confidence : {avg_conf:.1f}% ({conf_level})",
-            "",
-        ]
-    else:
-        lines += ["   No predictions available. Run Demo → Prediction first.", ""]
+    top_feat_text = ", ".join(top5["feature"].tolist()) if top5 is not None else \
+                   "gradient_mean, glcm_homogeneity, gradient_max, perimeter, area"
 
-    # Section 5: Top explanatory features
-    lines += ["5. TOP EXPLANATORY FEATURES (from training SHAP analysis)", thin]
-    fi = load_feature_importance()
-    if fi is not None:
-        top10 = fi.nlargest(10, "importance")
-        for _, row in top10.iterrows():
-            lines.append(f"   {row['feature']:<40} importance: {row['importance']:.4f}")
-    else:
-        lines.append("   Feature importance data not available.")
-    lines.append("")
-
-    # Section 6: Clinical disclaimer
-    lines += [
-        "6. CLINICAL DISCLAIMER",
-        thin,
-        "   MyoScan AI is a research prototype developed as part of a bachelor",
-        "   thesis at the German University in Cairo (GUC), Faculty of MET.",
-        "",
-        "   ⚠ This system provides DECISION SUPPORT ONLY.",
-        "   ⚠ It does NOT autonomously diagnose patients.",
-        "   ⚠ Results must be interpreted by a qualified medical professional.",
-        "   ⚠ Do not use for clinical diagnosis without appropriate validation.",
-        "",
-        "   All results are based on a research dataset and experimental models.",
-        "   Patient safety requires human clinical expertise and judgement.",
-        "",
-        sep,
-        f"  Report generated by MyoScan AI · {now}",
-        sep,
-    ]
-
-    return "\n".join(lines)
-
-
-def _build_html_report(report_text: str) -> str:
-    """Wrap plain-text report in a clean HTML document for browser viewing."""
-    now   = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-    body  = report_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>MyoScan AI Report — {now}</title>
   <style>
-    body {{ font-family: 'Courier New', monospace; background:#f8fafc; color:#2d3748;
-           max-width:900px; margin:40px auto; padding:0 20px; }}
-    pre  {{ background:#fff; border:1px solid #e2e8f0; border-radius:8px;
-           padding:24px; font-size:13px; line-height:1.6; white-space:pre-wrap; }}
-    h1   {{ color:#1a365d; font-family:sans-serif; border-bottom:2px solid #bee3f8;
-           padding-bottom:8px; }}
-    .disclaimer {{ background:#fffbeb; border-left:5px solid #d69e2e;
-                  padding:12px 16px; border-radius:6px; font-family:sans-serif;
-                  font-size:13px; color:#744210; margin-top:16px; }}
+    *{{ box-sizing:border-box; margin:0; padding:0; }}
+    body{{ font-family:'Segoe UI',Arial,sans-serif; background:#EBEBEB;
+           color:{B['navy']}; padding:30px 20px; }}
+    .page{{ max-width:860px; margin:0 auto; background:white;
+            border-radius:14px; overflow:hidden;
+            box-shadow:0 4px 32px rgba(0,0,0,.12); }}
+    .report-header{{ background:{B['burgundy']}; padding:22px 30px 18px; }}
+    .logo-row{{ display:flex; align-items:center; gap:18px; }}
+    .logo-title{{ color:white; font-size:1.9rem; font-weight:900; letter-spacing:-.4px; }}
+    .logo-sub{{ color:rgba(255,255,255,.82); font-size:.88rem; margin-top:3px; }}
+    .meta-bar{{ background:{B['navy']}; padding:9px 30px;
+                display:flex; gap:28px; flex-wrap:wrap; }}
+    .meta-item{{ color:{B['soft_grey']}; font-size:.78rem; font-family:monospace; }}
+    .body{{ padding:24px 30px; }}
+    .section-head{{ display:flex; align-items:center; gap:10px; margin:20px 0 12px; }}
+    .sec-badge{{ background:{B['burgundy']}; color:white; border-radius:6px;
+                 padding:3px 9px; font-weight:700; font-size:.8rem; }}
+    .sec-title{{ font-size:1rem; font-weight:700; color:{B['navy']}; }}
+    .sec-line{{ flex:1; height:1px; background:{B['border']}; }}
+    .card{{ background:{B['soft_grey']}; border:1px solid {B['border']};
+            border-radius:10px; padding:16px 20px; margin-bottom:12px; }}
+    .kv-grid{{ display:grid; grid-template-columns:1fr 1fr; gap:8px 24px; }}
+    .kv-label{{ font-size:.72rem; color:{B['mid_grey']}; text-transform:uppercase;
+                letter-spacing:.6px; }}
+    .kv-val{{ font-size:.88rem; font-weight:600; color:{B['navy']}; }}
+    table{{ width:100%; border-collapse:collapse; font-size:.83rem; }}
+    th{{ background:{B['navy']}; color:{B['soft_grey']}; padding:8px 12px;
+         text-align:left; }}
+    td{{ padding:7px 12px; }}
+    .result-box{{ border-radius:12px; padding:18px 24px; margin-bottom:16px;
+                  display:flex; justify-content:space-between; align-items:center;
+                  flex-wrap:wrap; gap:12px; border:2px solid {disease_c}; }}
+    .result-label{{ font-size:.72rem; color:{B['mid_grey']}; text-transform:uppercase;
+                    letter-spacing:.7px; }}
+    .result-class{{ font-size:1.8rem; font-weight:900; color:{disease_c}; margin-top:3px; }}
+    .conf-badge{{ border-radius:99px; padding:4px 18px; font-weight:800;
+                  font-size:.95rem; display:inline-block; margin-top:4px; }}
+    .disclaimer{{ background:{B['light_red']}; border:2px solid {B['burgundy']};
+                  border-radius:10px; padding:16px 20px; margin-top:8px;
+                  display:flex; gap:12px; align-items:flex-start; }}
+    .footer{{ background:{B['navy']}; color:{B['soft_grey']}; text-align:center;
+              font-size:.75rem; font-family:monospace; padding:10px; margin-top:0; }}
+    .prep-steps{{ display:grid; grid-template-columns:repeat(5,1fr); gap:8px;
+                  text-align:center; margin:10px 0; }}
+    .prep-step{{ background:{B['soft_grey']}; border-radius:8px; padding:8px 4px;
+                 font-size:.78rem; font-weight:600; color:{B['navy']}; }}
+    .prep-step.highlight{{ background:{B['light_red']}; }}
   </style>
 </head>
 <body>
-  <h1>🩺 MyoScan AI — Decision-Support Report</h1>
-  <pre>{body}</pre>
-  <div class="disclaimer">
-    ⚠️ <strong>Clinical Disclaimer:</strong> This report is generated by a research prototype
-    and must not be used for autonomous clinical diagnosis. Always consult a qualified
-    medical professional.
+<div class="page">
+
+  <!-- Header -->
+  <div class="report-header">
+    <div class="logo-row">
+      <svg width="50" height="50" viewBox="0 0 52 52" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="26" cy="26" r="26" fill="rgba(255,255,255,0.15)"/>
+        <path d="M8 26 Q13 16 18 26 Q23 36 28 26 Q33 16 38 26 Q41 20 44 26"
+              stroke="white" stroke-width="2.8" stroke-linecap="round" fill="none"/>
+        <circle cx="26" cy="26" r="4" fill="white" opacity="0.9"/>
+      </svg>
+      <div>
+        <div class="logo-title">MyoScan AI</div>
+        <div class="logo-sub">Explainable Ultrasound-Based Decision Support Report</div>
+      </div>
+    </div>
   </div>
+
+  <!-- Meta bar -->
+  <div class="meta-bar">
+    <span class="meta-item">&#128197; {now}</span>
+    <span class="meta-item">&#128193; {Path(image_path).name if image_path else '—'}</span>
+    <span class="meta-item">&#128300; MyoScan AI v1.0 &nbsp;|&nbsp; GUC MET Bachelor Thesis</span>
+  </div>
+
+  <div class="body">
+
+    <!-- B. Case Summary -->
+    <div class="section-head">
+      <span class="sec-badge">B</span>
+      <span class="sec-title">Case / Image Summary</span>
+      <span class="sec-line"></span>
+    </div>
+    <div class="card">
+      <div class="kv-grid">
+        <div><div class="kv-label">File name</div>
+             <div class="kv-val">{Path(image_path).name if image_path else 'Not provided'}</div></div>
+        <div><div class="kv-label">Image size</div>
+             <div class="kv-val">{data['img_size']}</div></div>
+        <div><div class="kv-label">Image mode</div>
+             <div class="kv-val">{data['img_mode']}</div></div>
+        <div><div class="kv-label">Sample category</div>
+             <div class="kv-val">{data['sample_cat']}</div></div>
+        <div><div class="kv-label">Reference label</div>
+             <div class="kv-val">{true_label or 'Not provided'}</div></div>
+        <div><div class="kv-label">Feature source</div>
+             <div class="kv-val">{data['feat_source'] or 'Not available'}</div></div>
+      </div>
+    </div>
+
+    <!-- C. Preprocessing -->
+    <div class="section-head">
+      <span class="sec-badge">C</span>
+      <span class="sec-title">Preprocessing Summary</span>
+      <span class="sec-line"></span>
+    </div>
+    <div class="card">
+      <div class="prep-steps">
+        <div class="prep-step">1. Load<br><small style="font-weight:400;color:{B['mid_grey']}">BGR→RGB</small></div>
+        <div class="prep-step">2. Grayscale<br><small style="font-weight:400;color:{B['mid_grey']}">convert</small></div>
+        <div class="prep-step">3. Otsu<br><small style="font-weight:400;color:{B['mid_grey']}">threshold</small></div>
+        <div class="prep-step highlight">4. ROI Mask<br><small style="font-weight:400;color:{B['mid_grey']}">contour</small></div>
+        <div class="prep-step highlight">5. Processed<br><small style="font-weight:400;color:{B['mid_grey']}">ROI region</small></div>
+      </div>
+      {pipe_imgs_html}
+    </div>
+
+    <!-- D. Features -->
+    <div class="section-head">
+      <span class="sec-badge">D</span>
+      <span class="sec-title">Radiomics Feature Summary</span>
+      <span class="sec-line"></span>
+    </div>
+    <div class="card">
+      {"<p style='font-size:.88rem;margin-bottom:10px'>28 radiomics features extracted from the isolated ROI. Top 5 by SHAP importance:</p>" if feat_rows else "<p style='font-size:.88rem;color:" + B['mid_grey'] + "'>Features not available.</p>"}
+      {('<div style="border:1px solid ' + B['border'] + ';border-radius:8px;overflow:hidden"><table>'
+        '<thead><tr style="background:' + B['light_red'] + ';color:' + B['navy'] + '">'
+        '<th>Feature</th><th style="text-align:center">Importance</th><th style="text-align:center">Current Value</th></tr></thead>'
+        '<tbody>' + feat_rows + '</tbody></table></div>') if feat_rows else ""}
+    </div>
+
+    <!-- E. Predictions -->
+    <div class="section-head">
+      <span class="sec-badge">E</span>
+      <span class="sec-title">Model Prediction Summary</span>
+      <span class="sec-line"></span>
+    </div>
+    {"<div class='result-box'><div><div class='result-label'>Suggested Diagnosis</div><div class='result-class'>" + most_common + "</div><div style='font-size:.82rem;color:" + B['mid_grey'] + ";margin-top:4px'>" + str(agreement_cnt) + " out of " + str(len(valid_preds)) + " models agree</div></div><div style='text-align:right'><div class='result-label'>Confidence Level</div><div class='conf-badge' style='background:" + (B['green_bg'] if conf_level=='High' else B['amber_bg'] if conf_level=='Medium' else B['light_red']) + ";color:" + (B['green'] if conf_level=='High' else B['amber'] if conf_level=='Medium' else B['red_text']) + "'>" + conf_level + " · " + (f'{avg_conf:.1f}%' if not np.isnan(avg_conf) else 'N/A') + "</div></div></div>" if valid_preds else "<div class='card' style='color:" + B['mid_grey'] + "'>No predictions available.</div>"}
+    {('<div style="border:1px solid ' + B['border'] + ';border-radius:10px;overflow:hidden;margin-bottom:12px"><table>'
+      '<thead><tr><th>Model</th><th>Branch</th><th>Prediction</th><th style="text-align:center">Confidence</th></tr></thead>'
+      '<tbody>' + pred_rows + '</tbody></table></div>') if pred_rows else ""}
+
+    <!-- F. Explainability -->
+    <div class="section-head">
+      <span class="sec-badge">F</span>
+      <span class="sec-title">Explainability Notes</span>
+      <span class="sec-line"></span>
+    </div>
+    <div class="card">
+      <p style="font-size:.88rem;margin-bottom:8px">
+        <strong>Feature Attribution (ML — SHAP):</strong> The ML prediction was primarily
+        influenced by: <span style="color:{B['burgundy']};font-weight:600">{top_feat_text}</span>.
+        These capture texture homogeneity, edge response intensity, and morphological properties
+        of the isolated muscle region.
+      </p>
+      <p style="font-size:.88rem;color:{B['mid_grey']}">
+        <strong>Spatial Attribution (CNN — Grad-CAM):</strong> For CNN predictions,
+        Grad-CAM highlights the muscle region pixels most strongly activating the final
+        convolutional layer.
+      </p>
+    </div>
+
+    <!-- G. Disclaimer -->
+    <div class="section-head">
+      <span class="sec-badge">G</span>
+      <span class="sec-title">Clinical Disclaimer</span>
+      <span class="sec-line"></span>
+    </div>
+    <div class="disclaimer">
+      <span style="font-size:1.5rem">&#9888;&#65039;</span>
+      <div>
+        <div style="font-weight:800;color:{B['burgundy']};font-size:.95rem;margin-bottom:6px">
+          For Research Use Only
+        </div>
+        <p style="color:{B['navy']};font-size:.86rem;line-height:1.6">
+          This report is generated by <strong>MyoScan AI</strong>, a research prototype for
+          <strong>decision-support purposes only</strong>. It is not a standalone clinical
+          diagnosis and must be reviewed by a qualified clinician. All results are derived
+          from an experimental system developed as part of a bachelor thesis at the
+          German University in Cairo (GUC), Faculty of Media Engineering and Technology.
+        </p>
+      </div>
+    </div>
+
+  </div><!-- /body -->
+
+  <div class="footer">
+    MyoScan AI &nbsp;·&nbsp; GUC MET Bachelor Thesis &nbsp;·&nbsp;
+    Eyad Ghonem &nbsp;·&nbsp; {now}
+  </div>
+
+</div><!-- /page -->
 </body>
 </html>"""
+
+
+def _build_report_txt(data: dict) -> str:
+    """Build a clean plain-text version of the clinical report for TXT download."""
+    now         = data["now"]
+    image_path  = data["image_path"]
+    true_label  = data["true_label"]
+    preds       = data["preds"]
+    feats       = data["feats"]
+    feat_cols   = data["feat_cols"]
+    feat_source = data["feat_source"]
+
+    sep  = "=" * 70
+    thin = "-" * 70
+    lines = [
+        sep,
+        "  MyoScan AI -- Clinical Decision-Support Report",
+        "  AI-Powered Radiomics for Muscle Disorder Assessment",
+        sep,
+        f"  Generated : {now}",
+        f"  System    : MyoScan AI v1.0  (GUC MET Bachelor Thesis)",
+        thin, "",
+        "B. CASE / IMAGE SUMMARY", thin,
+        f"   File       : {Path(image_path).name if image_path else 'Not provided'}",
+        f"   Size       : {data['img_size']}",
+        f"   Mode       : {data['img_mode']}",
+        f"   Category   : {data['sample_cat']}",
+        f"   Ref. label : {true_label or 'Not provided'}",
+        f"   Feat. src  : {feat_source or 'Not available'}",
+        "",
+        "C. PREPROCESSING PIPELINE", thin,
+        "   Step 1 : Load image (BGR) -> convert to RGB",
+        "   Step 2 : Convert to grayscale",
+        "   Step 3 : Gaussian blur -> Otsu threshold",
+        "   Step 4 : Morphological closing (3 iter) + opening (2 iter)",
+        "   Step 5 : Largest contour -> ROI binary mask",
+        "   Step 6 : Normalize masked region -> extract features",
+        "",
+    ]
+
+    # Features
+    fi    = load_feature_importance()
+    top5s = set(fi.nlargest(5, "importance")["feature"].tolist()) if fi is not None else set()
+    lines += ["D. RADIOMICS FEATURE SUMMARY", thin]
+    if feats is not None and feat_cols:
+        for col, val in zip(feat_cols[:28], feats[:28]):
+            star = "  [TOP]" if col in top5s else ""
+            lines.append(f"   {col:<40} {float(val):>10.4f}{star}")
+    else:
+        lines.append("   Features not available.")
+    lines.append("")
+
+    # Predictions
+    lines += ["E. MODEL PREDICTION SUMMARY", thin]
+    valid_preds = [p for p in preds if "error" not in p and "predicted_class" in p]
+    if valid_preds:
+        for p in valid_preds:
+            conf    = p.get("confidence", float("nan"))
+            conf_s  = f"{conf:.1f}%" if not np.isnan(float(conf)) else "N/A"
+            conf_lv = "High" if conf >= 70 else ("Medium" if conf >= 40 else "Low")
+            correct = p.get("correct")
+            verdict = "Correct" if correct is True else ("Incorrect" if correct is False else "Unknown")
+            lines.append(
+                f"   {p.get('selected_model', p.get('Model','—')):<30}  "
+                f"Predicted: {p.get('predicted_class','—'):<26}  "
+                f"Conf: {conf_s:>7} ({conf_lv})  {verdict}"
+            )
+        classes_pred  = [p["predicted_class"] for p in valid_preds]
+        most_common   = max(set(classes_pred), key=classes_pred.count)
+        agreement_cnt = classes_pred.count(most_common)
+        avg_conf      = np.nanmean([p.get("confidence", float("nan")) for p in valid_preds])
+        conf_level    = "High" if avg_conf >= 70 else ("Medium" if avg_conf >= 40 else "Low")
+        lines += [
+            "",
+            f"   Suggested class  : {most_common}",
+            f"   Model agreement  : {agreement_cnt}/{len(valid_preds)} models agree",
+            f"   Avg confidence   : {avg_conf:.1f}% ({conf_level})",
+        ]
+    else:
+        lines.append("   No predictions available.")
+    lines.append("")
+
+    # Explainability
+    lines += ["F. EXPLAINABILITY NOTES", thin]
+    if fi is not None:
+        top10 = fi.nlargest(10, "importance")
+        lines.append("   Top 10 features by SHAP importance (from training evaluation):")
+        for _, row in top10.iterrows():
+            lines.append(f"   {row['feature']:<40} importance: {row['importance']:.4f}")
+    else:
+        lines.append("   Feature importance not available.")
+    lines += [
+        "",
+        "   The prediction was mainly influenced by texture, gradient, and",
+        "   morphology-based radiomics descriptors extracted from the ROI.",
+        "",
+    ]
+
+    # Disclaimer
+    lines += [
+        "G. CLINICAL DISCLAIMER", thin,
+        "   This report is generated by MyoScan AI, a research prototype for",
+        "   decision-support purposes only. It is not a standalone clinical",
+        "   diagnosis and must be reviewed by a qualified clinician.",
+        "",
+        "   WARNING: Do NOT use for autonomous clinical diagnosis.",
+        "   Patient safety requires human clinical expertise and judgement.",
+        "",
+        sep,
+        f"  MyoScan AI  |  GUC MET Bachelor Thesis  |  Eyad Ghonem  |  {now}",
+        sep,
+    ]
+    return "\n".join(lines)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
