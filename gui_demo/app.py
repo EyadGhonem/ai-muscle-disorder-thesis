@@ -13,7 +13,7 @@ Pages (controlled via st.session_state["page"]):
   demo        — image selection, preprocessing, features, prediction, explainability
   dashboard   — thesis result metrics and figures
   comparison  — exploratory general-AI comparison
-  report      — hospital-style A4 clinical report with PDF/HTML/TXT download
+  report      — hospital-style A4 clinical report with HTML download
 
 Run:
     streamlit run gui_demo/app.py
@@ -439,7 +439,7 @@ def render_welcome_page():
         ("3", "Demo & Analysis", "Select a sample image, run preprocessing, extract features, run prediction"),
         ("4", "Results Dashboard", "Browse pre-computed thesis evaluation metrics and figures"),
         ("5", "AI Comparison", "View the exploratory comparison between MyoScan AI and general-purpose AI"),
-        ("6", "Report", "Generate a hospital-style clinical report and download as PDF, HTML, or TXT"),
+        ("6", "Report", "Generate a hospital-style clinical report and download as HTML"),
     ]
     for num, name, desc in step_labels:
         steps_html += f"""
@@ -518,7 +518,7 @@ def render_workflow_page():
         ("🎯", "Prediction",        "Disease class\nConfidence %"),
         ("🤝", "Model Agreement",   "X / N models agree"),
         ("💡", "Explainability",    "SHAP (ML)\nGrad-CAM (DL)"),
-        ("📋", "Clinical Report",   "Hospital-style\nPDF · HTML · TXT"),
+        ("📋", "Clinical Report",   "Hospital-style\nHTML download"),
     ], highlight_last=True)
 
     st.divider()
@@ -855,8 +855,69 @@ def _render_prediction_tab(image_path, true_label, cohort, ml_bundle, cnns):
         pass
 
 
+
+def get_explainability_assets(model_name, model_type):
+    """Map a selected model to its own explainability assets ONLY.
+
+    Never returns assets that belong to a different model.
+
+    Returns dict with:
+      shap_dir               – Path to this model's SHAP folder (None if absent)
+      shap_available         – True only when folder has PNG files
+      gradcam_dir            – Grad-CAM folder (DL branch only, else None)
+      gradcam_available      – True only when Grad-CAM PNGs exist
+      available_shap_models  – human-readable list of models WITH pre-computed SHAP
+    """
+    result = {
+        "shap_dir": None,
+        "shap_available": False,
+        "gradcam_dir": None,
+        "gradcam_available": False,
+        "available_shap_models": [],
+    }
+    if not model_name or not model_type:
+        return result
+
+    shap_root    = APLUS_DIR / "run_shap_analysis"
+    gradcam_root = APLUS_DIR / "run_gradcam"
+
+    # Collect model names that actually have SHAP PNG files
+    if shap_root.exists():
+        result["available_shap_models"] = sorted(
+            d.name.replace("_", " ")
+            for d in shap_root.iterdir()
+            if d.is_dir() and any(d.glob("*.png"))
+        )
+
+    if model_type == "ML":
+        # Match folder to selected model — spaces <-> underscores, case-insensitive
+        target = model_name.replace(" ", "_").lower()
+        if shap_root.exists():
+            for d in shap_root.iterdir():
+                if d.is_dir() and d.name.lower() == target:
+                    result["shap_dir"]       = d
+                    result["shap_available"] = any(d.glob("*.png"))
+                    break
+
+    elif model_type == "DL":
+        if gradcam_root.exists() and any(gradcam_root.glob("*.png")):
+            result["gradcam_dir"]       = gradcam_root
+            result["gradcam_available"] = True
+
+    return result
+
 def _render_explainability_tab():
-    """Model-aware explainability — only shows what is relevant to the selected model branch."""
+    """Model-aware explainability with two strictly separated sections.
+
+    A — Current Case Explanation:
+        Only assets that belong to the SELECTED model are shown.
+        If the selected model has no pre-computed SHAP/Grad-CAM, a clear
+        "not available" message is shown — no substitution with another model.
+
+    B — Overall Thesis Explainability Results (collapsible expander):
+        All thesis SHAP/Grad-CAM figures, clearly labelled as
+        "Overall thesis result — NOT current-case explanation."
+    """
     model_type = st.session_state.get("last_model_type")
     model_name = st.session_state.get("last_model_name")
 
@@ -865,112 +926,161 @@ def _render_explainability_tab():
         return
 
     st.markdown('<div class="ms-section">Explainability</div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="ms-card" style="margin-bottom:10px"><span style="font-size:.75rem;color:#667085">Selected model</span><br><strong style="color:#1F2937">{model_name or "—"}</strong>&nbsp;&nbsp;<span style="font-size:.78rem;background:#F6F7F9;border-radius:4px;padding:2px 8px;color:#667085">{model_type} branch</span></div>', unsafe_allow_html=True)
 
-    # ── ML branch: SHAP + feature importance only ──────────────────────────
+    # Banner — selected model
+    st.markdown(f"""
+<div class="ms-card" style="margin-bottom:12px">
+  <span style="font-size:.72rem;color:#667085;text-transform:uppercase">Prediction was made using</span><br>
+  <strong style="color:#1F2937;font-size:.98rem">{model_name or "—"}</strong>
+  &nbsp;<span style="background:#F6F7F9;border:1px solid #E5E7EB;border-radius:4px;
+              padding:2px 8px;font-size:.75rem;color:#667085">{model_type} branch</span>
+</div>
+""", unsafe_allow_html=True)
+
+    # Fetch ONLY the assets for this model
+    assets = get_explainability_assets(model_name, model_type)
+
+    # ── A: Current Case Explanation ────────────────────────────────────────
+    st.markdown("""
+<div style="background:#1F2937;color:white;border-radius:8px;
+            padding:9px 16px;font-weight:700;font-size:.87rem;margin-bottom:10px">
+  A &mdash; Current Case Explanation
+  <span style="font-weight:400;font-size:.74rem;opacity:.65;margin-left:8px">
+    based on selected model only &mdash; no unrelated figures shown
+  </span>
+</div>
+""", unsafe_allow_html=True)
+
     if model_type == "ML":
-        st.markdown("**SHAP Feature Attribution** — ML radiomics model")
-        st.caption(
-            "SHAP (SHapley Additive exPlanations) measures each radiomics feature's "
-            "contribution to the current prediction. Pre-computed on the held-out test set."
-        )
-
-        shap_dir = APLUS_DIR / "run_shap_analysis"
-        # Try to find SHAP figures for the selected model
-        # Model name may have spaces — folder uses underscores
-        model_folder_name = model_name.replace(" ", "_") if model_name else None
-        shap_model_dir = shap_dir / model_folder_name if model_folder_name else None
-
-        # If exact match not found, show available models
-        available_shap = sorted([d.name for d in shap_dir.iterdir() if d.is_dir()]) if shap_dir.exists() else []
-
-        if shap_model_dir and shap_model_dir.exists():
-            _show_shap_for_model(shap_model_dir, model_name)
-        elif available_shap:
-            st.caption(f"Pre-computed SHAP not found for '{model_name}'. Available models: {', '.join(available_shap)}")
-            sel = st.selectbox("View SHAP for", available_shap, key="xai_shap_sel")
-            _show_shap_for_model(shap_dir / sel, sel)
+        if assets["shap_available"]:
+            st.markdown(f"**Model-specific SHAP &mdash; {model_name}**")
+            st.caption(
+                "Pre-computed SHAP (SHapley Additive exPlanations) for this exact model "
+                "on the held-out test set."
+            )
+            _show_shap_for_model(assets["shap_dir"], model_name)
         else:
-            st.markdown('<div class="ms-card" style="color:#667085">SHAP figures not generated. Run <code>python scripts/run_shap_analysis.py</code>.</div>', unsafe_allow_html=True)
+            avail = ", ".join(assets["available_shap_models"]) if assets["available_shap_models"] else "none"
+            st.markdown(f"""
+<div style="background:#FEF3C7;border:1.5px solid #D97706;border-radius:8px;
+            padding:12px 16px;margin-bottom:10px;font-size:.85rem">
+  <strong>Model-specific SHAP plots are not available for <em>{model_name}</em>.</strong><br>
+  Current explanation is limited to the radiomics feature importance ranking below.<br>
+  <span style="color:#667085;font-size:.78rem">Pre-computed SHAP available for: {avail}</span>
+</div>
+""", unsafe_allow_html=True)
 
-        # Feature importance chart (always available for ML)
+        # Feature importance — present for all ML but labelled as overall
         fi = load_feature_importance()
         if fi is not None:
-            st.markdown("**Top 10 Radiomics Features** — training importance ranking")
+            st.markdown("**Top 10 Radiomics Features** — overall importance (ML branch)")
             top10 = fi.nlargest(10, "importance").sort_values("importance")
             try:
                 import plotly.express as px
                 fig = px.bar(top10, x="importance", y="feature", orientation="h",
-                             color="importance", color_continuous_scale=["#FDECEF","#8B1E3F"],
+                             color="importance",
+                             color_continuous_scale=["#FDECEF", "#8B1E3F"],
                              labels={"importance": "Importance", "feature": ""},
                              text=top10["importance"].apply(lambda v: f"{v:.4f}"))
                 fig.update_traces(textposition="outside")
-                fig.update_layout(showlegend=False, height=340, coloraxis_showscale=False,
-                                  margin=dict(l=10,r=40,t=10,b=10),
+                fig.update_layout(showlegend=False, height=340,
+                                  coloraxis_showscale=False,
+                                  margin=dict(l=10, r=40, t=10, b=10),
                                   plot_bgcolor="white", paper_bgcolor="white")
                 st.plotly_chart(fig, width="stretch")
             except Exception:
                 st.dataframe(top10, width="stretch")
 
-        # Explicitly note: DL explanations do NOT apply
         st.markdown("""
 <div style="background:#F6F7F9;border:1px solid #E5E7EB;border-radius:8px;
-            padding:10px 16px;margin-top:8px;font-size:.82rem;color:#667085">
-  Grad-CAM heatmaps are applicable only to CNN (deep learning) models.
-  The current prediction uses a <strong>radiomics ML model</strong> —
+            padding:10px 16px;margin-top:4px;font-size:.82rem;color:#667085">
+  Grad-CAM heatmaps are only applicable to CNN (deep learning) models.
+  The current prediction uses a <strong>radiomics ML model</strong> &mdash;
   no CNN heatmap applies here.
 </div>
 """, unsafe_allow_html=True)
 
-    # ── DL branch: Grad-CAM only ───────────────────────────────────────────
     elif model_type == "DL":
-        st.markdown(f"**Grad-CAM Spatial Attribution** — {model_name}")
-        st.caption(
-            "Grad-CAM computes gradients w.r.t. the final convolutional layer to highlight "
-            "image regions most influential to the prediction. "
-            "Only pre-computed outputs are shown — no fabricated results."
-        )
-
-        gradcam_dir = APLUS_DIR / "run_gradcam"
-        if gradcam_dir.exists():
-            # Show grid overview
+        if assets["gradcam_available"]:
+            gradcam_dir = assets["gradcam_dir"]
+            st.markdown(f"**Grad-CAM Spatial Attribution &mdash; pre-computed thesis CNN results**")
+            st.caption(
+                "Grad-CAM highlights image regions most influential to the CNN prediction. "
+                "Figures below were generated during thesis evaluation (EfficientNetB0, test set). "
+                "Live per-image Grad-CAM is not computed in this demo."
+            )
             grid_path = gradcam_dir / "gradcam_grid.png"
             if grid_path.exists():
                 st.image(str(grid_path),
-                         caption=f"Grad-CAM overview grid (pre-computed for EfficientNetB0 — thesis test set)",
+                         caption="Grad-CAM overview — EfficientNetB0, thesis test set",
                          width="stretch")
-            # Individual class heatmaps
-            gc_files = [f for f in sorted(gradcam_dir.glob("gradcam_*.png")) if "grid" not in f.name]
+            gc_files = [f for f in sorted(gradcam_dir.glob("gradcam_*.png"))
+                        if "grid" not in f.name]
             if gc_files:
                 names = [f.stem.replace("gradcam_", "").replace("_", " ") for f in gc_files]
                 sel   = st.selectbox("Class heatmap", names, key="xai_gc_sel")
-                gc_p  = gradcam_dir / f"gradcam_{sel.replace(' ','_')}.png"
+                gc_p  = gradcam_dir / f"gradcam_{sel.replace(' ', '_')}.png"
                 if gc_p.exists():
                     st.image(str(gc_p), caption=f"Grad-CAM — {sel}", width="stretch")
         else:
-            st.markdown(f"""
+            st.markdown('''
 <div class="ms-card" style="color:#667085">
-  Grad-CAM figures not found for <strong>{model_name}</strong>.
-  Grad-CAM is available only when CNN heatmap output is generated for the selected CNN model.<br>
-  Run: <code>python scripts/run_gradcam.py</code>
+  Grad-CAM figures not found. Run: <code>python scripts/run_gradcam.py</code>
 </div>
-""", unsafe_allow_html=True)
+''', unsafe_allow_html=True)
 
-        # CNN confusion matrix if available
-        cm_path = APLUS_DIR / "cnn_confusion_matrix" / "cnn_confusion_matrix.png"
-        if cm_path.exists():
-            st.markdown("**CNN Confusion Matrix** — patient-level test set")
-            st.image(str(cm_path), width="stretch")
-
-        # Explicitly note: ML SHAP does NOT apply to DL
         st.markdown("""
 <div style="background:#F6F7F9;border:1px solid #E5E7EB;border-radius:8px;
-            padding:10px 16px;margin-top:8px;font-size:.82rem;color:#667085">
+            padding:10px 16px;margin-top:4px;font-size:.82rem;color:#667085">
   SHAP feature importance applies to <strong>ML radiomics models</strong> only.
-  The current prediction uses a CNN — SHAP values shown in the thesis dashboard
+  The current prediction uses a CNN &mdash; SHAP values in the thesis dashboard
   are from ML model training and do not explain this CNN prediction.
 </div>
 """, unsafe_allow_html=True)
+
+    # ── B: Overall Thesis Explainability (expander — clearly labelled) ─────
+    st.markdown('<div style="height:6px"></div>', unsafe_allow_html=True)
+    with st.expander(
+        "B — Overall Thesis Explainability Results  (not current-case explanation)",
+        expanded=False,
+    ):
+        st.markdown("""
+<div style="background:#FEF3C7;border:1.5px solid #D97706;border-radius:8px;
+            padding:10px 16px;margin-bottom:14px;font-size:.83rem">
+  <strong>These figures represent overall thesis training/evaluation results &mdash;
+  NOT an explanation of the current prediction.</strong><br>
+  They were pre-computed across the full train/test split and may involve a different
+  model than the one selected above. Provided here for thesis overview only.
+</div>
+""", unsafe_allow_html=True)
+
+        shap_dir = APLUS_DIR / "run_shap_analysis"
+        if shap_dir.exists():
+            dirs_with_pngs = [d for d in sorted(shap_dir.iterdir())
+                              if d.is_dir() and any(d.glob("*.png"))]
+            if dirs_with_pngs:
+                st.markdown("**Thesis SHAP Results (all trained models)**")
+                for md in dirs_with_pngs:
+                    label = md.name.replace("_", " ")
+                    c1, c2 = st.columns(2)
+                    bp   = md / "shap_bar.png"
+                    beep = md / "shap_beeswarm.png"
+                    if bp.exists():
+                        c1.image(str(bp),   caption=f"SHAP bar — {label}", width="stretch")
+                    if beep.exists():
+                        c2.image(str(beep), caption=f"Beeswarm — {label}", width="stretch")
+            else:
+                st.caption("No thesis SHAP figures found.")
+        else:
+            st.caption("No thesis SHAP figures found.")
+
+        gradcam_dir = APLUS_DIR / "run_gradcam"
+        grid_path   = gradcam_dir / "gradcam_grid.png"
+        if grid_path.exists():
+            st.markdown("**Thesis Grad-CAM Overview &mdash; EfficientNetB0**")
+            st.image(str(grid_path),
+                     caption="Overall thesis result — EfficientNetB0 Grad-CAM (not current case)",
+                     width="stretch")
 
 
 def _show_shap_for_model(shap_model_dir: Path, model_label: str):
@@ -1003,11 +1113,27 @@ def render_dashboard_page():
     # Top KPI cards
     st.markdown('<div class="ms-section">Key Results</div>', unsafe_allow_html=True)
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Dataset",           "~28,199",  "ultrasound images")
+    c1.metric("Labelled Samples",  "8,017",    "5-class radiomics evaluation")
     c2.metric("Best ML Accuracy",  "99.1%",    "Gradient Boosting")
     c3.metric("Best Macro F1",     "0.514",    "XGBoost (patient-level)")
     c4.metric("FSHD Severity CNN", "84.4%",    "ResNet50 val accuracy")
     c5.metric("MAT Disease CNN",   "43.3%",    "EfficientNetB0 val accuracy")
+
+    # Dataset clarification — avoid confusion between 28k entries and labelled subset
+    st.markdown("""
+<div style="background:#F6F7F9;border:1px solid #E5E7EB;border-radius:8px;
+            padding:12px 18px;margin:4px 0 14px;font-size:.82rem;color:#374151;line-height:1.65">
+  <strong>Dataset levels &mdash; important distinction:</strong><br>
+  The project contains approximately <strong>28,000 extracted ultrasound image/frame entries</strong>
+  in the extended GUI dataset manifest. However, not all frames have complete labels for every task.
+  The main patient-level radiomics evaluation used
+  <strong>8,017 labelled samples across 5 disease classes and 193 patients</strong>
+  (154 train&nbsp;/&nbsp;39 test patients, 0 patient overlap).
+  Although approximately 25,000 FSHD PNG frames exist on disk, only approximately
+  <strong>4,700 have severity labels</strong> in the CSV &mdash;
+  FSHD severity modelling was performed only on this labelled subset.
+</div>
+""", unsafe_allow_html=True)
 
     # ML summary table
     st.markdown('<div class="ms-section">ML Model Performance Summary</div>', unsafe_allow_html=True)
@@ -1226,7 +1352,7 @@ def _collect_report_data() -> dict:
 
 
 def render_report_page():
-    """A4-style hospital report with PDF, HTML, TXT download."""
+    """A4-style hospital report with HTML download (stable)."""
     st.markdown('<div class="ms-page-title">Clinical Decision-Support Report</div>', unsafe_allow_html=True)
     st.markdown('<div class="ms-page-sub">Auto-generated from the current analysis session. Complete the Demo tab first.</div>', unsafe_allow_html=True)
 
@@ -1241,42 +1367,27 @@ def render_report_page():
         gen = st.button("Generate Report", type="primary", width="stretch")
     with g2:
         if st.button("Clear", width="stretch"):
-            for k in ["report_html","report_txt","report_pdf"]:
+            for k in ["report_html", "report_data"]:
                 st.session_state.pop(k, None)
             st.rerun()
 
     if gen:
         data = _collect_report_data()
         st.session_state["report_html"] = _build_report_html(data)
-        st.session_state["report_txt"]  = _build_report_txt(data)
         st.session_state["report_data"] = data
-        if REPORTLAB_OK:
-            st.session_state["report_pdf"] = _build_report_pdf(data)
 
     report_html = st.session_state.get("report_html")
     if not report_html:
         st.info("Click **Generate Report** to produce the clinical report.")
         return
 
-    # Download row
+    # Download row — HTML only (stable, no broken PDF/TXT buttons)
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M")
-    d1, d2, d3 = st.columns([1, 1, 1])
+    _, d1, _ = st.columns([1.5, 1, 1.5])
     with d1:
-        st.download_button("Download HTML", data=report_html,
+        st.download_button("⬇ Download HTML Report", data=report_html,
                            file_name=f"MyoScan_{ts}.html", mime="text/html",
                            width="stretch")
-    with d2:
-        st.download_button("Download TXT", data=st.session_state.get("report_txt",""),
-                           file_name=f"MyoScan_{ts}.txt", mime="text/plain",
-                           width="stretch")
-    with d3:
-        pdf_bytes = st.session_state.get("report_pdf")
-        if pdf_bytes:
-            st.download_button("Download PDF", data=pdf_bytes,
-                               file_name=f"MyoScan_{ts}.pdf", mime="application/pdf",
-                               width="stretch")
-        else:
-            st.caption("PDF export requires reportlab." if not REPORTLAB_OK else "PDF not generated — click Generate Report again.")
 
     st.divider()
 
