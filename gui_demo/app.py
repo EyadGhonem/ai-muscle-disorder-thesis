@@ -1116,24 +1116,35 @@ def _get_expl_asset_status() -> list:
     gradcam_path  = str(gradcam_root.relative_to(PROJECT_ROOT)) if gradcam_found else "—"
     gradcam_note  = "Precomputed thesis Grad-CAM (4 disease classes)" if gradcam_found else "Not generated"
 
+    resnet50_gradcam = gradcam_root / "gradcam_resnet50_Inclusion_Body_Myositis.png"
+    resnet50_gc_found = resnet50_gradcam.exists()
+
     dl_entries = [
-        ("EfficientNetB0", "efficientnetb0_disease.keras", True),
-        ("ResNet50",        "resnet50_disease.keras",       False),
-        ("DenseNet121",     "densenet121_disease.keras",    False),
-        ("MobileNetV2",     "mobilenetv2_disease.keras",    False),
+        ("EfficientNetB0", "efficientnetb0_disease.keras", True,  False),
+        ("ResNet50",        "resnet50_disease.keras",       False, resnet50_gc_found),
+        ("DenseNet121",     "densenet121_disease.keras",    False, False),
+        ("MobileNetV2",     "mobilenetv2_disease.keras",    False, False),
     ]
-    for cnn_name, keras_file, has_gradcam_assets in dl_entries:
+    for cnn_name, keras_file, has_gradcam_assets, has_resnet50_gc in dl_entries:
         model_ok = (models_dir / keras_file).exists()
+        if has_gradcam_assets and gradcam_found:
+            gc_found_str = "Yes"
+            gc_path_str  = gradcam_path
+            gc_note      = gradcam_note + " — precomputed only, not per current image"
+        elif has_resnet50_gc:
+            gc_found_str = "Yes (IBM only)"
+            gc_path_str  = str(resnet50_gradcam.relative_to(PROJECT_ROOT))
+            gc_note      = "ResNet50 Grad-CAM for IBM class only (precomputed example)"
+        else:
+            gc_found_str = "No"
+            gc_path_str  = "—"
+            gc_note      = "No Grad-CAM assets generated for this CNN"
         rows.append({
             "Model": cnn_name, "Branch": "DL",
             "Explanation": "Grad-CAM",
-            "Found": ("Yes" if has_gradcam_assets and gradcam_found else "No"),
-            "Path": (gradcam_path if has_gradcam_assets and gradcam_found else "—"),
-            "Notes": (
-                gradcam_note + " — precomputed only, not per current image"
-                if has_gradcam_assets and gradcam_found
-                else "No Grad-CAM assets generated for this CNN"
-            ) + ("" if model_ok else " | model .keras missing"),
+            "Found": gc_found_str,
+            "Path": gc_path_str,
+            "Notes": gc_note + ("" if model_ok else " | model .keras missing"),
         })
 
     # Severity CNN note (no .keras in models dir)
@@ -1528,46 +1539,81 @@ def _render_explainability_tab():
             preds_now[0].get("predicted_class", "")
             if preds_now else st.session_state.get("active_true_label", "")
         )
-        # Build a lookup: normalised class name → Path
-        gradcam_map = {}
+        # Build two lookups:
+        #   generic_map  – files named gradcam_<ClassName>.png  (EfficientNetB0 thesis set)
+        #   resnet50_map – files named gradcam_resnet50_<ClassName>.png  (ResNet50 IBM)
+        generic_map  = {}
+        resnet50_map = {}
         if gradcam_dir.exists():
             for p in gradcam_dir.glob("gradcam_*.png"):
-                key = p.stem.replace("gradcam_", "").replace("_", " ").lower()
-                gradcam_map[key] = p
-        # Try to match predicted class
-        pred_key    = (pred_class or "").replace("_", " ").lower()
-        matched_png = gradcam_map.get(pred_key)
-        # Also try IBM alias
-        if matched_png is None and "ibm" in pred_key:
-            matched_png = gradcam_map.get("inclusion body myositis")
-        if matched_png is None and "inclusion body" in pred_key:
-            matched_png = gradcam_map.get("inclusion body myositis")
+                stem = p.stem  # e.g. "gradcam_Dermatomyositis" or "gradcam_resnet50_Inclusion_Body_Myositis"
+                if stem.startswith("gradcam_resnet50_"):
+                    key = stem.replace("gradcam_resnet50_", "").replace("_", " ").lower()
+                    resnet50_map[key] = p
+                else:
+                    key = stem.replace("gradcam_", "").replace("_", " ").lower()
+                    if key != "grid":   # skip gradcam_grid.png
+                        generic_map[key] = p
+
+        pred_key = (pred_class or "").replace("_", " ").lower()
+        # IBM alias normalisation
+        ibm_aliases = {"ibm", "inclusion body myositis"}
+
+        def _resolve(lookup):
+            """Find the matching PNG in lookup, handling IBM aliases."""
+            p = lookup.get(pred_key)
+            if p is None and pred_key in ibm_aliases:
+                p = lookup.get("inclusion body myositis") or lookup.get("ibm")
+            return p
+
+        def _show_gradcam(png_path, model_label, extra_note=""):
+            note_html = (
+                f'<br><span style="color:#065f46;font-size:.78rem">{extra_note}</span>'
+                if extra_note else ""
+            )
+            st.markdown(
+                f'<div style="background:#D1FAE5;border:1.5px solid #059669;border-radius:8px;'
+                f'padding:10px 16px;margin-bottom:10px;font-size:.84rem;color:#065f46">'
+                f'<strong>Grad-CAM available for {model_label}.</strong> '
+                f'Precomputed class-level example from thesis evaluation &mdash; '
+                f'not generated live for this specific image.{note_html}</div>',
+                unsafe_allow_html=True,
+            )
+            st.image(str(png_path),
+                     caption=f"{model_label} Grad-CAM — class: {pred_class} (precomputed example)",
+                     width="stretch")
 
         if "efficientnetb0" in mn_lower:
+            matched_png = _resolve(generic_map)
             if matched_png and matched_png.exists():
-                st.markdown("""
-<div style="background:#D1FAE5;border:1.5px solid #059669;border-radius:8px;
-            padding:10px 16px;margin-bottom:10px;font-size:.84rem;color:#065f46">
-  <strong>Grad-CAM available for EfficientNetB0.</strong>
-  This is a <em>precomputed class-level example</em> from thesis evaluation &mdash;
-  not generated live for this specific image, but represents the EfficientNetB0
-  response for the predicted class.
-</div>
-""", unsafe_allow_html=True)
-                st.image(str(matched_png),
-                         caption=f"EfficientNetB0 Grad-CAM — class: {pred_class} (precomputed thesis example)",
-                         width="stretch")
+                _show_gradcam(matched_png, "EfficientNetB0")
             else:
                 st.markdown(
                     f'<div style="background:#FEF3C7;border:1.5px solid #D97706;border-radius:8px;'
                     f'padding:10px 16px;margin-bottom:10px;font-size:.84rem">'
-                    f'No precomputed Grad-CAM found for predicted class <strong>{pred_class}</strong>.<br>'
+                    f'No precomputed Grad-CAM for predicted class <strong>{pred_class}</strong>.<br>'
                     f'<span style="color:#667085;font-size:.78rem">'
-                    f'Available classes: Dermatomyositis, Inclusion Body Myositis, Normal, Polymyositis. '
-                    f'FSHD was not included in the Grad-CAM evaluation run.</span>'
-                    f'</div>',
+                    f'Available: Dermatomyositis, Inclusion Body Myositis, Normal, Polymyositis. '
+                    f'FSHD was not included in the Grad-CAM run.</span></div>',
                     unsafe_allow_html=True,
                 )
+
+        elif "resnet50" in mn_lower:
+            matched_png = _resolve(resnet50_map)
+            if matched_png and matched_png.exists():
+                _show_gradcam(matched_png, "ResNet50",
+                              "IBM-only Grad-CAM computed on M017_20160107165757_idx0572.png.")
+            else:
+                st.markdown(
+                    f'<div style="background:#FEF3C7;border:1.5px solid #D97706;border-radius:8px;'
+                    f'padding:10px 16px;margin-bottom:10px;font-size:.84rem">'
+                    f'ResNet50 Grad-CAM is only available for <strong>Inclusion Body Myositis</strong>.<br>'
+                    f'<span style="color:#667085;font-size:.78rem">'
+                    f'Predicted class was <em>{pred_class}</em>. Run prediction on an IBM image '
+                    f'with ResNet50 to see the Grad-CAM.</span></div>',
+                    unsafe_allow_html=True,
+                )
+
         else:
             mn_display = model_name or "the selected CNN"
             st.markdown(
@@ -1575,8 +1621,8 @@ def _render_explainability_tab():
                 f'padding:12px 16px;margin-bottom:10px;font-size:.85rem">'
                 f'No Grad-CAM assets were generated for <em>{mn_display}</em>.<br>'
                 f'<span style="color:#667085;font-size:.78rem">'
-                f'Precomputed Grad-CAM exists only for EfficientNetB0. Switch to EfficientNetB0 '
-                f'and re-run prediction to see Grad-CAM for Dermatomyositis, IBM, Normal, or Polymyositis.'
+                f'Precomputed Grad-CAM: EfficientNetB0 (all 4 MAT classes) and '
+                f'ResNet50 (IBM only). Switch model and re-run prediction.'
                 f'</span></div>',
                 unsafe_allow_html=True,
             )
