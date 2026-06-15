@@ -137,7 +137,11 @@ st.markdown("""
 
 /* ── global ── */
 html, body, [class*="css"] { font-family: 'Inter', -apple-system, sans-serif !important; }
-.block-container { padding-top: 1.5rem !important; }
+/* Hide Streamlit top toolbar (Deploy button, hamburger menu) */
+header[data-testid="stHeader"] { display: none !important; }
+#MainMenu { visibility: hidden !important; }
+.stDeployButton { display: none !important; }
+.block-container { padding-top: 0.5rem !important; }
 
 /* ── splash animation ── */
 @keyframes fadeInUp {
@@ -1513,23 +1517,69 @@ def _render_explainability_tab():
 """, unsafe_allow_html=True)
 
     elif model_type == "DL":
-        # Section A: current-case Grad-CAM is NEVER shown for any CNN.
-        # Live per-image Grad-CAM requires gradient hooks during inference,
-        # which are not enabled in this demo. Pre-computed thesis Grad-CAM
-        # (EfficientNetB0 only) is in Section B below.
-        mn_display = model_name or "the selected CNN"
-        st.markdown(
-            f'<div style="background:#FEF3C7;border:1.5px solid #D97706;border-radius:8px;'
-            f'padding:12px 16px;margin-bottom:10px;font-size:.85rem">'
-            f'<strong>Current-case Grad-CAM is not available for <em>{mn_display}</em>.</strong><br>'
-            f'Live per-image Grad-CAM requires CNN gradient hooks during inference, which is not '
-            f'enabled in this demo.<br>'
-            f'<span style="color:#667085;font-size:.78rem">'
-            f'Pre-computed thesis Grad-CAM (EfficientNetB0 only) is shown in the '
-            f'<strong>Overall Thesis Explainability Results</strong> section below.</span>'
-            f'</div>',
-            unsafe_allow_html=True,
+        # For EfficientNetB0: show the pre-computed class-level Grad-CAM if one exists
+        # for the predicted class. For all other CNNs: clearly state not available.
+        gradcam_dir = APLUS_DIR / "run_gradcam"
+        mn_lower    = (model_name or "").lower().replace(" ", "")
+
+        # Map predicted class → Grad-CAM filename (normalise spaces/underscores)
+        preds_now   = st.session_state.get("last_predictions", [])
+        pred_class  = (
+            preds_now[0].get("predicted_class", "")
+            if preds_now else st.session_state.get("active_true_label", "")
         )
+        # Build a lookup: normalised class name → Path
+        gradcam_map = {}
+        if gradcam_dir.exists():
+            for p in gradcam_dir.glob("gradcam_*.png"):
+                key = p.stem.replace("gradcam_", "").replace("_", " ").lower()
+                gradcam_map[key] = p
+        # Try to match predicted class
+        pred_key    = (pred_class or "").replace("_", " ").lower()
+        matched_png = gradcam_map.get(pred_key)
+        # Also try IBM alias
+        if matched_png is None and "ibm" in pred_key:
+            matched_png = gradcam_map.get("inclusion body myositis")
+        if matched_png is None and "inclusion body" in pred_key:
+            matched_png = gradcam_map.get("inclusion body myositis")
+
+        if "efficientnetb0" in mn_lower:
+            if matched_png and matched_png.exists():
+                st.markdown("""
+<div style="background:#D1FAE5;border:1.5px solid #059669;border-radius:8px;
+            padding:10px 16px;margin-bottom:10px;font-size:.84rem;color:#065f46">
+  <strong>Grad-CAM available for EfficientNetB0.</strong>
+  This is a <em>precomputed class-level example</em> from thesis evaluation &mdash;
+  not generated live for this specific image, but represents the EfficientNetB0
+  response for the predicted class.
+</div>
+""", unsafe_allow_html=True)
+                st.image(str(matched_png),
+                         caption=f"EfficientNetB0 Grad-CAM — class: {pred_class} (precomputed thesis example)",
+                         width="stretch")
+            else:
+                st.markdown(
+                    f'<div style="background:#FEF3C7;border:1.5px solid #D97706;border-radius:8px;'
+                    f'padding:10px 16px;margin-bottom:10px;font-size:.84rem">'
+                    f'No precomputed Grad-CAM found for predicted class <strong>{pred_class}</strong>.<br>'
+                    f'<span style="color:#667085;font-size:.78rem">'
+                    f'Available classes: Dermatomyositis, Inclusion Body Myositis, Normal, Polymyositis. '
+                    f'FSHD was not included in the Grad-CAM evaluation run.</span>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+        else:
+            mn_display = model_name or "the selected CNN"
+            st.markdown(
+                f'<div style="background:#FEF3C7;border:1.5px solid #D97706;border-radius:8px;'
+                f'padding:12px 16px;margin-bottom:10px;font-size:.85rem">'
+                f'No Grad-CAM assets were generated for <em>{mn_display}</em>.<br>'
+                f'<span style="color:#667085;font-size:.78rem">'
+                f'Precomputed Grad-CAM exists only for EfficientNetB0. Switch to EfficientNetB0 '
+                f'and re-run prediction to see Grad-CAM for Dermatomyositis, IBM, Normal, or Polymyositis.'
+                f'</span></div>',
+                unsafe_allow_html=True,
+            )
         st.markdown("""
 <div style="background:#F6F7F9;border:1px solid #E5E7EB;border-radius:8px;
             padding:10px 16px;margin-top:4px;font-size:.82rem;color:#667085">
