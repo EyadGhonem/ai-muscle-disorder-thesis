@@ -787,16 +787,11 @@ def render_demo_page(ml_bundle, cnns_fshd, cnns_mat):
         _render_explainability_tab()
 
     with sub[4]:
-        # Get the current image / cohort / label from session state
-        ip   = st.session_state.get("active_image_path")
-        tl   = st.session_state.get("true_label")
-        co   = st.session_state.get("cohort", FSHD)
-        ml_b = st.session_state.get("ml_bundle")
-        cnns = st.session_state.get("cnns", [])
-        if ip is None:
+        # ml_bundle, cnns, cohort, image_path, true_label are already in scope from render_demo_page()
+        if not has_image:
             st.info("Please load or upload an image first (use the image selector above).")
         else:
-            _render_compare_all_tab(Path(ip), tl, co, ml_b, cnns)
+            _render_compare_all_tab(Path(image_path), true_label, cohort, ml_bundle, cnns)
 
 
 def _render_image_selector():
