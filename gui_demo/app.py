@@ -69,6 +69,40 @@ ML_SUMMARY_CSV         = PROJECT_ROOT / "output" / "baseline_and_advanced_models
 APLUS_DIR              = PROJECT_ROOT / "output" / "aplus"
 DEMO_DATA_DIR          = PROJECT_ROOT / "demo_data"
 COMPARISON_CSV         = PROJECT_ROOT / "results" / "general_ai_comparison" / "test_cases.csv"
+APLUS_FULL_DIR         = PROJECT_ROOT / "results" / "a_plus_full_improvements"
+
+# Clinical interpretation text shown after prediction
+CLINICAL_INTERPRETATION = {
+    "Normal": (
+        "The image features appear closer to the normal muscle ultrasound pattern "
+        "in the training data. This does not exclude early or mild disease and should "
+        "be interpreted with full clinical context."
+    ),
+    "Inclusion Body Myositis": (
+        "The prediction suggests imaging patterns that may be consistent with inclusion "
+        "body myositis. Key radiomics features may reflect muscle texture and structural "
+        "changes associated with IBM. Specialist review, EMG, and biopsy remain essential."
+    ),
+    "IBM": (
+        "The prediction suggests imaging patterns that may be consistent with inclusion "
+        "body myositis. Specialist review, EMG, and biopsy remain essential."
+    ),
+    "Dermatomyositis": (
+        "The prediction suggests patterns that may be consistent with dermatomyositis-"
+        "related muscle involvement. Clinical symptoms, laboratory findings (CK, ANA), "
+        "and specialist review are still required for diagnosis."
+    ),
+    "Polymyositis": (
+        "The prediction suggests patterns that may be consistent with polymyositis-"
+        "related muscle involvement. This output should support, not replace, clinical "
+        "assessment including labs and muscle biopsy."
+    ),
+    "FSHD": (
+        "The prediction suggests imaging patterns that may be consistent with FSHD-"
+        "related muscle involvement. Severity assessment may support follow-up planning, "
+        "but longitudinal clinical and genetic validation is required."
+    ),
+}
 
 ROI_STEPS = [
     ("1. Original",       "Original ultrasound"),
@@ -85,6 +119,7 @@ PAGES = [
     ("dashboard",  "4", "Results"),
     ("comparison", "5", "AI Comparison"),
     ("report",     "6", "Report"),
+    ("validation", "7", "Validation & Trust"),
 ]
 
 # ── page config ────────────────────────────────────────────────────────────
@@ -301,10 +336,24 @@ def render_sidebar_stepper():
 <div style="height:1px;background:#E5E7EB;margin:12px 16px 12px"></div>
 """, unsafe_allow_html=True)
 
-        # System status (compact)
-        ml_bundle = st.session_state.get("_ml_bundle_loaded", False)
+        # System Status — check key paths without crashing
         with st.expander("System Status", expanded=False):
-            st.caption("Models loaded on first Demo run.")
+            checks = [
+                ("ML bundle (.pkl)",
+                 PROJECT_ROOT / "output" / "baseline_and_advanced_models" / "trained_models.pkl"),
+                ("ML summary CSV",      ML_SUMMARY_CSV),
+                ("Feature importance",  FEATURE_IMPORTANCE_CSV),
+                ("Demo data folder",    DEMO_DATA_DIR),
+                ("SHAP analysis",       APLUS_DIR / "run_shap_analysis"),
+                ("Grad-CAM output",     APLUS_DIR / "run_gradcam"),
+                ("A+ results folder",   APLUS_FULL_DIR),
+                ("CNN models folder",   GUI_DIR / "models"),
+                ("Comparison CSV",      COMPARISON_CSV),
+            ]
+            for label, path in checks:
+                found = Path(path).exists()
+                icon = "🟢" if found else "🔴"
+                st.caption(f"{icon} {label}")
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -474,10 +523,26 @@ def render_welcome_page():
 </div>"""
     st.markdown(f'<div class="ms-card">{steps_html}</div>', unsafe_allow_html=True)
 
+    # Doctor-in-the-loop section
+    st.markdown('<div class="ms-section">Doctor-in-the-Loop Platform</div>', unsafe_allow_html=True)
+    st.markdown("""
+<div class="ms-card">
+  <div style="font-size:.88rem;color:#374151;line-height:1.75">
+    MyoScan AI is designed as a <strong>doctor-in-the-loop</strong> ultrasound radiomics platform.
+    It supports clinicians by extracting quantitative imaging features, running ML/DL models,
+    explaining predictions, and generating a structured clinical report. It does
+    <strong>not replace clinical judgement</strong> — a qualified specialist must review all
+    outputs before any clinical action is taken.
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
     _, start_col, _ = st.columns([2, 1.5, 2])
     with start_col:
         if st.button("Go to Analysis", type="primary", width="stretch"):
             _go("demo")
+
+    show_clinical_disclaimer()
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -569,6 +634,80 @@ def _badge(correct) -> str:
     if correct is True:  return '<span class="badge-ok">Correct</span>'
     if correct is False: return '<span class="badge-bad">Incorrect</span>'
     return '<span class="badge-unk">Unknown</span>'
+
+def show_clinical_disclaimer():
+    """Reusable clinical safety disclaimer used on multiple pages."""
+    st.markdown("""
+<div class="disclaimer">
+  <strong>Research prototype only.</strong> MyoScan AI is a
+  <strong>doctor-in-the-loop</strong> decision-support tool. It is not a standalone
+  diagnostic system. Final interpretation must be made by a qualified clinician.
+</div>
+""", unsafe_allow_html=True)
+
+
+def _normalize_conf(c) -> float | None:
+    """Normalize confidence to [0, 1] whether stored as fraction or percentage."""
+    if c is None:
+        return None
+    try:
+        c = float(c)
+        if np.isnan(c):
+            return None
+        return c / 100.0 if c > 1.0 else c
+    except Exception:
+        return None
+
+
+def confidence_label(conf_01) -> str:
+    """Return a confidence tier label for a [0,1] normalized confidence value."""
+    if conf_01 is None:
+        return "Unknown"
+    if conf_01 >= 0.80:
+        return "High"
+    if conf_01 >= 0.60:
+        return "Moderate"
+    if conf_01 >= 0.40:
+        return "Low"
+    return "Very Low"
+
+
+def _render_top3_predictions(probs, class_names: list):
+    """Show a Top-3 differential prediction table from raw class probabilities."""
+    if probs is None or not class_names:
+        st.caption("Top-3 class probabilities are not available for this model.")
+        return
+    try:
+        probs_arr = np.array(probs, dtype=float)
+        top_idx = np.argsort(probs_arr)[::-1][:3]
+        rows = []
+        for rank, idx in enumerate(top_idx, 1):
+            if idx < len(class_names):
+                rows.append({
+                    "Rank": rank,
+                    "Class": class_names[int(idx)],
+                    "Probability": f"{probs_arr[int(idx)] * 100:.1f}%",
+                })
+        if rows:
+            st.markdown('<div class="ms-section">Top-3 Differential Predictions</div>', unsafe_allow_html=True)
+            st.caption("Ranked class probabilities from the selected model.")
+            st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+    except Exception:
+        st.caption("Top-3 probabilities are not available for this model.")
+
+
+def _safe_image(path, caption="", cols=None):
+    """Display an image safely; show a warning if the file is missing."""
+    target = cols if cols is not None else st
+    try:
+        p = Path(path)
+        if p.exists():
+            target.image(str(p), caption=caption or p.stem.replace("_", " "), width="stretch")
+        else:
+            target.caption(f"Asset not found: {p.name}")
+    except Exception as exc:
+        target.caption(f"Could not display {Path(path).name}: {exc}")
+
 
 def _conf_label_html(conf: float) -> str:
     B = BRAND
@@ -783,6 +922,13 @@ def _render_prediction_tab(image_path, true_label, cohort, ml_bundle, cnns):
                     pr   = predict_ml(ml_bundle, mn, feats)
                     pr   = align_ml_for_demo(pr, true_label, ml_bundle, image_path, mn)
                     disp = format_ml_display(mn, pr, true_label, image_path, run_index, model_index=i)
+                    # Carry probabilities + class_names for Top-3 table
+                    disp["probabilities"] = pr.get("probabilities")
+                    disp["class_names"] = (
+                        list(ml_bundle.label_encoder.classes_)
+                        if ml_bundle and getattr(ml_bundle, "label_encoder", None) is not None
+                        else []
+                    )
                     preds.append({"Model": mn, "branch": "ML", **disp})
 
                 # Track which model was used for explainability
@@ -799,6 +945,9 @@ def _render_prediction_tab(image_path, true_label, cohort, ml_bundle, cnns):
                     pr   = predict_cnn(cnn_obj, image_path, cohort=cohort)
                     pr   = align_dl_for_demo(pr, true_label, image_path, cnn_obj.class_names)
                     disp = format_cnn_display(cnn_obj.name, pr, true_label, image_path, cohort, run_index, model_index=i)
+                    # Carry probabilities + class_names for Top-3 table
+                    disp["probabilities"] = pr.get("probabilities")
+                    disp["class_names"]   = cnn_obj.class_names if cnn_obj else []
                     preds.append({"Model": cnn_obj.name, "branch": "DL", **disp})
 
                 st.session_state["last_model_type"] = "DL"
@@ -873,6 +1022,40 @@ def _render_prediction_tab(image_path, true_label, cohort, ml_bundle, cnns):
             st.plotly_chart(fig, width="stretch")
     except Exception:
         pass
+
+    # ── Confidence meaning ────────────────────────────────────────────────
+    conf_01 = _normalize_conf(avg_conf)
+    clabel  = confidence_label(conf_01)
+    conf_pct = f"{avg_conf:.1f}%" if avg_conf and not np.isnan(avg_conf) else "N/A"
+    if clabel in ("Low", "Very Low"):
+        st.warning(
+            f"**Confidence: {conf_pct} — {clabel}.** "
+            "Low confidence may indicate an uncertain case, an out-of-distribution image, "
+            "or visual similarity across multiple disease classes. "
+            "Clinical review is strongly recommended."
+        )
+    else:
+        st.info(f"Confidence: {conf_pct} — **{clabel}**.")
+
+    # ── Top-3 differential predictions (single-model run only) ────────────
+    if len(valid) == 1:
+        p1 = valid[0]
+        _render_top3_predictions(p1.get("probabilities"), p1.get("class_names", []))
+
+    # ── Clinical interpretation ───────────────────────────────────────────
+    interp = CLINICAL_INTERPRETATION.get(top_cls)
+    if interp:
+        st.markdown('<div class="ms-section">Clinical Interpretation</div>', unsafe_allow_html=True)
+        st.info(interp)
+
+    # ── Scope-of-prediction limitation ───────────────────────────────────
+    st.markdown("""
+<div class="disclaimer" style="margin-top:10px">
+  <strong>Scope of prediction:</strong> This result is based on the uploaded ultrasound
+  image only. The model does not use patient history, symptoms, laboratory tests,
+  genetic testing, EMG, biopsy results, or physician examination findings.
+</div>
+""", unsafe_allow_html=True)
 
 
 
@@ -1111,6 +1294,122 @@ def _show_shap_for_model(shap_model_dir: Path, model_label: str):
             if p.exists(): st.image(str(p), width="stretch")
         else:
             st.info("Waterfall plots not found.")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  PAGE: VALIDATION & TRUST
+# ══════════════════════════════════════════════════════════════════════════
+
+def render_validation_page():
+    """Validation & Trust — dataset stats, methodology, limitations, result figures."""
+    st.markdown('<div class="ms-page-title">Validation & Trust</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="ms-page-sub">Dataset characteristics, evaluation methodology, '
+        'reported metrics, and known limitations of this research prototype.</div>',
+        unsafe_allow_html=True,
+    )
+
+    # ── Dataset summary cards ─────────────────────────────────────────────
+    st.markdown('<div class="ms-section">Dataset Summary</div>', unsafe_allow_html=True)
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Total Images",       "28,000+",  "extended manifest")
+    c2.metric("Disease Classes",    "5",        "ML evaluation")
+    c3.metric("Radiomics Features", "28",       "per image")
+    c4.metric("ML Classifiers",     "9",        "trained models")
+    c5.metric("DL Models",          "4 + 1",    "disease + severity")
+
+    # ── Patient-level split ───────────────────────────────────────────────
+    st.markdown('<div class="ms-section">Patient-Level Split</div>', unsafe_allow_html=True)
+    split_col, info_col = st.columns([1, 2])
+    with split_col:
+        s1, s2, s3 = st.columns(3)
+        s1.metric("Train",   "154", "patients")
+        s2.metric("Test",    "39",  "patients")
+        s3.metric("Overlap", "0",   "patients")
+    with info_col:
+        st.info(
+            "**Patient-level splitting** was used to prevent data leakage. "
+            "All images from one patient were assigned exclusively to either the "
+            "training set or the test set — never both. "
+            "This ensures evaluation reflects generalisation to genuinely unseen patients."
+        )
+
+    # ── Accuracy vs Macro F1 ──────────────────────────────────────────────
+    st.markdown('<div class="ms-section">Accuracy vs Macro F1</div>', unsafe_allow_html=True)
+    st.warning(
+        "**Accuracy can be misleadingly high in imbalanced datasets.** "
+        "This dataset is heavily skewed toward FSHD. A model predicting FSHD for every "
+        "image would achieve high accuracy while failing on all other classes. "
+        "**Macro F1** is the primary metric: it weights all disease classes equally "
+        "and better reflects minority-class performance."
+    )
+
+    # ── Key model results ─────────────────────────────────────────────────
+    st.markdown('<div class="ms-section">Key Model Results</div>', unsafe_allow_html=True)
+    results_rows = {
+        "Model / Setting": [
+            "SVM — image-level accuracy",
+            "XGBoost — patient-level macro F1",
+            "ResNet50 — FSHD severity CNN",
+            "EfficientNetB0 — MAT disease CNN",
+        ],
+        "Value": ["98.35%", "0.514", "84.38%", "43.3%"],
+        "Notes": [
+            "High due to FSHD class dominance",
+            "Better reflects class-balanced performance",
+            "Binary mild vs severe — ~4,700 labelled frames",
+            "4-class disease; MAT test set is small",
+        ],
+    }
+    st.dataframe(pd.DataFrame(results_rows), width="stretch", hide_index=True)
+
+    # ── Known limitations ─────────────────────────────────────────────────
+    st.markdown('<div class="ms-section">Known Limitations</div>', unsafe_allow_html=True)
+    st.markdown("""
+<div class="ms-card">
+<ul style="font-size:.87rem;line-height:2.1;color:#374151;padding-left:1.2rem;margin:0">
+  <li><strong>Dataset imbalance:</strong> FSHD images dominate, inflating accuracy metrics.</li>
+  <li><strong>FSHD prediction bias:</strong> Models may favour FSHD for ambiguous inputs.</li>
+  <li><strong>Source–disease confounding:</strong> Different diseases were acquired at
+      different centres, introducing scanner and protocol variation that may co-vary with
+      disease label.</li>
+  <li><strong>Incomplete severity labels:</strong> ~25,000 FSHD frames exist on disk,
+      but only ~4,700 have mild/severe labels — severity modelling used this labelled
+      subset only.</li>
+  <li><strong>No external clinical validation:</strong> The system has not been tested
+      on independent clinical datasets from new hospitals or patient cohorts.</li>
+  <li><strong>Image-only input:</strong> No patient history, labs, EMG, biopsy, or
+      clinical context is used in predictions.</li>
+</ul>
+</div>
+""", unsafe_allow_html=True)
+
+    # ── Thesis result figures ─────────────────────────────────────────────
+    st.markdown('<div class="ms-section">Thesis Evaluation Figures</div>', unsafe_allow_html=True)
+    st.caption("Figures below are pre-computed outputs from thesis evaluation scripts.")
+
+    fig_dirs_checked = [
+        (APLUS_FULL_DIR, "Full Improvements Results"),
+        (APLUS_DIR,      "Core Analysis Results"),
+    ]
+    found_any_figs = False
+    for fig_dir, dir_label in fig_dirs_checked:
+        fp = Path(fig_dir)
+        if fp.exists():
+            pngs = sorted(fp.rglob("*.png"))[:24]  # cap at 24 images
+            if pngs:
+                found_any_figs = True
+                with st.expander(f"{dir_label}  ({len(pngs)} figures)", expanded=False):
+                    img_cols = st.columns(2)
+                    for i, p in enumerate(pngs):
+                        _safe_image(p, caption=p.stem.replace("_", " "), cols=img_cols[i % 2])
+    if not found_any_figs:
+        st.info(
+            "No result figures found. Run evaluation scripts to generate figures in "
+            "output/aplus/ or results/a_plus_full_improvements/"
+        )
+
+    show_clinical_disclaimer()
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -1575,18 +1874,73 @@ def _render_a4_preview(data: dict):
     else:
         st.caption("Run a prediction to see explainability notes.")
 
-    # G. Disclaimer
-    _sec("G", "Clinical Disclaimer")
+    # H. Top-3 differential predictions
+    _sec("H", "Top-3 Differential Predictions")
+    if vp:
+        p1 = vp[0]
+        _render_top3_predictions(p1.get("probabilities"), p1.get("class_names", []))
+    else:
+        st.caption("Run a prediction to see differential output.")
+
+    # I. Confidence meaning
+    _sec("I", "Confidence Meaning")
+    conf_01_inline = _normalize_conf(data.get("avg_conf"))
+    clabel_inline  = confidence_label(conf_01_inline)
+    conf_pct_inline = f"{data['avg_conf']:.1f}%" if data.get("avg_conf") and not np.isnan(data["avg_conf"]) else "N/A"
+    B2 = BRAND
+    label_colors = {
+        "High": (B2["green_bg"], B2["green"]),
+        "Moderate": (B2["amber_bg"], B2["amber"]),
+        "Low": (B2["red_bg"], B2["red"]),
+        "Very Low": (B2["red_bg"], B2["red"]),
+    }
+    lbg, lfg = label_colors.get(clabel_inline, (B2["grey_bg"], B2["muted"]))
+    st.markdown(
+        f'<span style="background:{lbg};color:{lfg};border-radius:99px;padding:3px 14px;'
+        f'font-weight:700;font-size:.9rem">{clabel_inline}</span>'
+        f'&nbsp;<span style="font-size:.88rem">{conf_pct_inline}</span>',
+        unsafe_allow_html=True,
+    )
+    if clabel_inline in ("Low", "Very Low"):
+        st.warning(
+            "Low confidence may indicate an uncertain or visually ambiguous case. "
+            "Clinical review is strongly recommended."
+        )
+
+    # J. Clinical interpretation
+    _sec("J", "Clinical Interpretation")
+    interp_inline = CLINICAL_INTERPRETATION.get(data.get("most_common", ""))
+    if interp_inline:
+        st.info(interp_inline)
+    else:
+        st.caption("Run a prediction to see clinical interpretation.")
+
+    # K. Limitations
+    _sec("K", "Limitations")
+    st.markdown("""
+<div style="background:#F6F7F9;border:1px solid #E5E7EB;border-radius:8px;padding:12px 16px">
+<ul style="font-size:.82rem;line-height:1.9;color:#374151;padding-left:1.2rem;margin:0">
+  <li>Prediction based on ultrasound image only — no patient history, labs, EMG, or biopsy used.</li>
+  <li>Dataset imbalance: FSHD dominates; models may favour FSHD for ambiguous cases.</li>
+  <li>Source–disease confounding: different diseases acquired at different centres.</li>
+  <li>No external clinical validation performed.</li>
+  <li>Research prototype — not approved for clinical diagnostic use.</li>
+</ul>
+</div>
+""", unsafe_allow_html=True)
+
+    # G. Doctor-in-the-Loop Disclaimer
+    _sec("G", "Doctor-in-the-Loop Disclaimer")
     st.markdown(f"""
 <div style="background:{B['light_red']};border:1.5px solid {B['burgundy']};
             border-radius:8px;padding:14px 18px;margin-bottom:4px;
             display:flex;align-items:flex-start;gap:10px">
   <span style="font-size:1.3rem">&#9888;&#65039;</span>
   <div style="font-size:.83rem;color:{B['navy']};line-height:1.6">
-    This report is generated by <strong>MyoScan AI</strong>, a research prototype for
-    <strong>decision-support purposes only</strong>. It is not a standalone clinical diagnosis
-    and must be reviewed by a qualified clinician. All results are derived from an experimental
-    system (GUC MET Bachelor Thesis — Eyad Ghonem).
+    <strong>Research prototype only.</strong> MyoScan AI is a
+    <strong>doctor-in-the-loop</strong> decision-support tool. It is not a standalone
+    diagnostic system. Final interpretation must be made by a qualified clinician.
+    GUC MET Bachelor Thesis — Eyad Ghonem.
   </div>
 </div>
 """, unsafe_allow_html=True)
@@ -1866,6 +2220,85 @@ def _build_report_html(data: dict) -> str:
     else:
         expl_html = '<p style="font-size:.85rem;color:#667085">No model selected.</p>'
 
+    # ── Top-3 differential table ──────────────────────────────────────────
+    top3_html = ""
+    if vp:
+        p1 = vp[0]
+        p1_probs = p1.get("probabilities")
+        p1_classes = p1.get("class_names", [])
+        if p1_probs is not None and p1_classes:
+            try:
+                probs_arr = np.array(p1_probs, dtype=float)
+                top_idx = np.argsort(probs_arr)[::-1][:3]
+                rows_t3 = ""
+                for rank, idx in enumerate(top_idx, 1):
+                    if int(idx) < len(p1_classes):
+                        prob_pct = f"{probs_arr[int(idx)] * 100:.1f}%"
+                        cls_t3 = p1_classes[int(idx)]
+                        rows_t3 += (
+                            f'<tr><td style="padding:5px 10px">{rank}</td>'
+                            f'<td style="padding:5px 10px;font-weight:600;color:{_disease_color(cls_t3)}">{cls_t3}</td>'
+                            f'<td style="padding:5px 10px;text-align:center;font-family:monospace">{prob_pct}</td></tr>'
+                        )
+                if rows_t3:
+                    top3_html = (
+                        f'<table style="width:100%;border-collapse:collapse;font-size:.82rem">'
+                        f'<thead><tr style="background:{B["light_red"]};color:{B["navy"]}">'
+                        f'<th style="padding:7px 10px">Rank</th>'
+                        f'<th style="padding:7px 10px">Class</th>'
+                        f'<th style="padding:7px 10px;text-align:center">Probability</th>'
+                        f'</tr></thead><tbody>{rows_t3}</tbody></table>'
+                    )
+            except Exception:
+                pass
+    if not top3_html:
+        top3_html = f'<p style="font-size:.84rem;color:{B["muted"]}">Top-3 class probabilities not available for this model.</p>'
+
+    # ── Confidence meaning ────────────────────────────────────────────────
+    conf_01_r = _normalize_conf(ac)
+    clabel_r  = confidence_label(conf_01_r)
+    conf_bg_map = {
+        "High": B["green_bg"], "Moderate": B["amber_bg"],
+        "Low": B["red_bg"], "Very Low": B["red_bg"], "Unknown": B["grey_bg"],
+    }
+    conf_fg_map = {
+        "High": B["green"], "Moderate": B["amber"],
+        "Low": B["red"], "Very Low": B["red"], "Unknown": B["muted"],
+    }
+    conf_warn = ""
+    if clabel_r in ("Low", "Very Low"):
+        conf_warn = (
+            f'<p style="font-size:.82rem;color:{B["red"]};margin-top:6px">'
+            "Low confidence may indicate an uncertain, out-of-distribution, or "
+            "visually ambiguous case. Clinical review is strongly recommended.</p>"
+        )
+    conf_meaning_html = (
+        f'<span style="background:{conf_bg_map.get(clabel_r, B["grey_bg"])};'
+        f'color:{conf_fg_map.get(clabel_r, B["muted"])};border-radius:99px;'
+        f'padding:3px 12px;font-weight:700;font-size:.88rem">{clabel_r}</span>'
+        f'&nbsp; <span style="font-size:.85rem;color:{B["navy"]}">{cs}</span>'
+        f'{conf_warn}'
+    )
+
+    # ── Clinical interpretation ───────────────────────────────────────────
+    interp_txt = CLINICAL_INTERPRETATION.get(mc, "")
+    clinical_interp_html = (
+        f'<p style="font-size:.85rem;color:{B["navy"]};line-height:1.65">{interp_txt}</p>'
+        if interp_txt else
+        f'<p style="font-size:.84rem;color:{B["muted"]}">Interpretation not available.</p>'
+    )
+
+    # ── Limitations ───────────────────────────────────────────────────────
+    limitations_html = (
+        '<ul style="font-size:.82rem;line-height:1.9;color:#374151;padding-left:1.2rem;margin:0">'
+        "<li>Prediction based on ultrasound image only — no patient history, labs, EMG, or biopsy used.</li>"
+        "<li>Dataset imbalance: FSHD class dominates; models may be biased toward FSHD.</li>"
+        "<li>Source–disease confounding: different diseases acquired at different clinical centres.</li>"
+        "<li>No external clinical validation has been performed on independent datasets.</li>"
+        "<li>Research prototype — not approved for clinical diagnostic use.</li>"
+        "</ul>"
+    )
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="UTF-8"><title>MyoScan AI Report</title>
@@ -1923,13 +2356,22 @@ td{{padding:6px 10px}}
     {'<div class="result-box"><div><div style="font-size:.7rem;color:' + B["muted"] + ';text-transform:uppercase">Selected Model Output</div><div class="result-cls">' + mc + '</div><div style="font-size:.78rem;color:' + B["muted"] + '">' + str(agr) + ' of ' + str(len(vp)) + ' models agree</div></div><div style="text-align:right"><div style="font-size:.7rem;color:' + B["muted"] + ';text-transform:uppercase">Confidence</div><div class="conf-badge" style="background:' + cl_bg + ';color:' + cl_fg + '">' + cl + ' &middot; ' + cs + '</div></div></div><div style="border:1px solid ' + B["border"] + ';border-radius:8px;overflow:hidden;margin-bottom:10px"><table><thead><tr><th>Model</th><th>Branch</th><th>Prediction</th><th style="text-align:center">Confidence</th></tr></thead><tbody>' + pred_rows + '</tbody></table></div>' if vp else '<div class="card" style="color:' + B["muted"] + '">No predictions available.</div>'}
     <div class="sec"><span class="sec-badge">F</span><span class="sec-title">Explainability Notes</span><span class="sec-line"></span></div>
     <div class="card">{expl_html}</div>
-    <div class="sec"><span class="sec-badge">G</span><span class="sec-title">Clinical Disclaimer</span><span class="sec-line"></span></div>
+    <div class="sec"><span class="sec-badge">H</span><span class="sec-title">Top-3 Differential Predictions</span><span class="sec-line"></span></div>
+    <div class="card">{top3_html}</div>
+    <div class="sec"><span class="sec-badge">I</span><span class="sec-title">Confidence Meaning</span><span class="sec-line"></span></div>
+    <div class="card">{conf_meaning_html}</div>
+    <div class="sec"><span class="sec-badge">J</span><span class="sec-title">Clinical Interpretation</span><span class="sec-line"></span></div>
+    <div class="card">{clinical_interp_html}</div>
+    <div class="sec"><span class="sec-badge">K</span><span class="sec-title">Limitations</span><span class="sec-line"></span></div>
+    <div class="card">{limitations_html}</div>
+    <div class="sec"><span class="sec-badge">G</span><span class="sec-title">Doctor-in-the-Loop Disclaimer</span><span class="sec-line"></span></div>
     <div class="disclaimer">
       <span style="font-size:1.2rem">&#9888;&#65039;</span>
-      <p style="font-size:.83rem;color:{B['navy']};line-height:1.6">
-        This report is generated by <strong>MyoScan AI</strong>, a research prototype for
-        <strong>decision-support purposes only</strong>. It is not a standalone clinical diagnosis
-        and must be reviewed by a qualified clinician. GUC MET Bachelor Thesis — Eyad Ghonem.
+      <p style="font-size:.83rem;color:{B['navy']};line-height:1.65">
+        <strong>Research prototype only.</strong> MyoScan AI is a
+        <strong>doctor-in-the-loop</strong> decision-support tool. It is not a standalone
+        diagnostic system. Final interpretation must be made by a qualified clinician.
+        GUC MET Bachelor Thesis — Eyad Ghonem.
       </p>
     </div>
   </div>
@@ -2029,6 +2471,8 @@ section[data-testid="stSidebar"] { display: none !important; }
         render_comparison_page()
     elif page == "report":
         render_report_page()
+    elif page == "validation":
+        render_validation_page()
     else:
         render_welcome_page()
 
