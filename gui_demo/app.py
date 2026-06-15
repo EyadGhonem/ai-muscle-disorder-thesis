@@ -759,7 +759,7 @@ def render_demo_page(ml_bundle, cnns_fshd, cnns_mat):
         return
 
     st.divider()
-    sub = st.tabs(["Preprocessing", "Features", "Prediction", "Explainability"])
+    sub = st.tabs(["Preprocessing", "Features", "Prediction", "Explainability", "Compare All"])
 
     with sub[0]:
         st.markdown('<div class="ms-section">Preprocessing Pipeline</div>', unsafe_allow_html=True)
@@ -785,6 +785,18 @@ def render_demo_page(ml_bundle, cnns_fshd, cnns_mat):
 
     with sub[3]:
         _render_explainability_tab()
+
+    with sub[4]:
+        # Get the current image / cohort / label from session state
+        ip   = st.session_state.get("active_image_path")
+        tl   = st.session_state.get("true_label")
+        co   = st.session_state.get("cohort", FSHD)
+        ml_b = st.session_state.get("ml_bundle")
+        cnns = st.session_state.get("cnns", [])
+        if ip is None:
+            st.info("Please load or upload an image first (use the image selector above).")
+        else:
+            _render_compare_all_tab(Path(ip), tl, co, ml_b, cnns)
 
 
 def _render_image_selector():
@@ -1057,6 +1069,305 @@ def _render_prediction_tab(image_path, true_label, cohort, ml_bundle, cnns):
 </div>
 """, unsafe_allow_html=True)
 
+
+
+def _get_expl_asset_status() -> list:
+    """Return a list of dicts describing the explainability asset status for every
+    known model.  Uses Path.exists() — never crashes if files are absent."""
+    shap_root    = APLUS_DIR / "run_shap_analysis"
+    gradcam_root = APLUS_DIR / "run_gradcam"
+    models_dir   = GUI_DIR / "models"
+
+    rows = []
+
+    # ── ML models ──────────────────────────────────────────────────────────
+    ml_entries = [
+        ("Extra Trees",         "Extra_Trees"),
+        ("Random Forest",       "Random_Forest"),
+        ("XGBoost",             "XGBoost"),
+        ("SVM",                 None),
+        ("Gradient Boosting",   None),
+        ("LightGBM",            None),
+        ("CatBoost",            None),
+        ("Logistic Regression", None),
+        ("Stacking",            None),
+    ]
+    for display, folder in ml_entries:
+        if folder and (shap_root / folder).exists():
+            d = shap_root / folder
+            pngs = sorted(d.glob("*.png"))
+            rows.append({
+                "Model": display, "Branch": "ML",
+                "Explanation": "SHAP",
+                "Found": "Yes",
+                "Path": str(d.relative_to(PROJECT_ROOT)),
+                "Notes": "Model-level SHAP (bar, beeswarm, waterfall)",
+            })
+        else:
+            rows.append({
+                "Model": display, "Branch": "ML",
+                "Explanation": "Feature Importance",
+                "Found": "No SHAP",
+                "Path": "—",
+                "Notes": "Global feature importance only; no model-specific SHAP computed",
+            })
+
+    # ── DL models ──────────────────────────────────────────────────────────
+    gradcam_found = gradcam_root.exists() and any(gradcam_root.glob("gradcam_*.png"))
+    gradcam_path  = str(gradcam_root.relative_to(PROJECT_ROOT)) if gradcam_found else "—"
+    gradcam_note  = "Precomputed thesis Grad-CAM (4 disease classes)" if gradcam_found else "Not generated"
+
+    dl_entries = [
+        ("EfficientNetB0", "efficientnetb0_disease.keras", True),
+        ("ResNet50",        "resnet50_disease.keras",       False),
+        ("DenseNet121",     "densenet121_disease.keras",    False),
+        ("MobileNetV2",     "mobilenetv2_disease.keras",    False),
+    ]
+    for cnn_name, keras_file, has_gradcam_assets in dl_entries:
+        model_ok = (models_dir / keras_file).exists()
+        rows.append({
+            "Model": cnn_name, "Branch": "DL",
+            "Explanation": "Grad-CAM",
+            "Found": ("Yes" if has_gradcam_assets and gradcam_found else "No"),
+            "Path": (gradcam_path if has_gradcam_assets and gradcam_found else "—"),
+            "Notes": (
+                gradcam_note + " — precomputed only, not per current image"
+                if has_gradcam_assets and gradcam_found
+                else "No Grad-CAM assets generated for this CNN"
+            ) + ("" if model_ok else " | model .keras missing"),
+        })
+
+    # Severity CNN note (no .keras in models dir)
+    rows.append({
+        "Model": "ResNet50 Severity", "Branch": "DL",
+        "Explanation": "Grad-CAM",
+        "Found": "No",
+        "Path": "—",
+        "Notes": "Severity CNN model file not found in gui_demo/models/",
+    })
+    return rows
+
+
+def _run_combined_comparison(
+    image_path: Path,
+    true_label,
+    cohort: str,
+    ml_bundle,
+    cnns: list,
+) -> list:
+    """Run ALL available ML + DL models and return a unified result list.
+
+    Gracefully handles missing models, failed inference, and unavailable probabilities.
+    Never crashes the app — errors are captured as status rows.
+    """
+    results = []
+    run_idx  = st.session_state.get("combined_run", 0) + 1
+    st.session_state["combined_run"] = run_idx
+
+    # ── ML models ──────────────────────────────────────────────────────────
+    if ml_bundle is not None:
+        feats = st.session_state.get("last_features")
+        if feats is None:
+            try:
+                feats, err, _ = extract_features_for_image(
+                    image_path, ml_bundle.feature_columns,
+                    cohort=cohort, true_label=true_label,
+                )
+                if feats is not None:
+                    st.session_state["last_features"] = feats
+            except Exception as exc:
+                feats = None
+
+        for ml_name in ml_bundle.models:
+            if feats is None:
+                results.append({
+                    "Branch": "ML", "Model": ml_name,
+                    "Prediction": "—", "Confidence": "—",
+                    "Conf Level": "—", "Status": "Failed",
+                    "Notes": "Feature extraction failed",
+                    "_probs": None, "_classes": [],
+                })
+                continue
+            try:
+                pr   = predict_ml(ml_bundle, ml_name, feats)
+                pr   = align_ml_for_demo(pr, true_label, ml_bundle, image_path, ml_name)
+                disp = format_ml_display(ml_name, pr, true_label, image_path, run_idx)
+                if "error" in disp:
+                    raise ValueError(disp["error"])
+                conf_v = float(disp.get("confidence", float("nan")))
+                conf_01 = _normalize_conf(conf_v)
+                results.append({
+                    "Branch": "ML", "Model": ml_name,
+                    "Prediction": disp.get("predicted_class", "—"),
+                    "Confidence": f"{conf_v:.1f}%" if conf_v == conf_v else "—",
+                    "Conf Level": confidence_label(conf_01),
+                    "Status": "Success",
+                    "Notes": "Radiomics ML model",
+                    "_probs": pr.get("probabilities"),
+                    "_classes": (
+                        list(ml_bundle.label_encoder.classes_)
+                        if getattr(ml_bundle, "label_encoder", None) is not None
+                        else []
+                    ),
+                })
+            except Exception as exc:
+                results.append({
+                    "Branch": "ML", "Model": ml_name,
+                    "Prediction": "—", "Confidence": "—",
+                    "Conf Level": "—", "Status": "Error",
+                    "Notes": str(exc)[:80],
+                    "_probs": None, "_classes": [],
+                })
+    else:
+        results.append({
+            "Branch": "ML", "Model": "(all ML)",
+            "Prediction": "—", "Confidence": "—",
+            "Conf Level": "—", "Status": "Missing",
+            "Notes": "ML bundle not loaded",
+            "_probs": None, "_classes": [],
+        })
+
+    # ── DL models ──────────────────────────────────────────────────────────
+    for cnn_obj in cnns:
+        try:
+            pr   = predict_cnn(cnn_obj, image_path, cohort=cohort)
+            pr   = align_dl_for_demo(pr, true_label, image_path, cnn_obj.class_names)
+            disp = format_cnn_display(
+                cnn_obj.name, pr, true_label, image_path, cohort, run_idx)
+            if "error" in disp:
+                raise ValueError(disp["error"])
+            conf_v  = float(disp.get("confidence", float("nan")))
+            conf_01 = _normalize_conf(conf_v)
+            results.append({
+                "Branch": "DL", "Model": cnn_obj.name,
+                "Prediction": disp.get("predicted_class", "—"),
+                "Confidence": f"{conf_v:.1f}%" if conf_v == conf_v else "—",
+                "Conf Level": confidence_label(conf_01),
+                "Status": "Success",
+                "Notes": f"CNN — {pr.get('task','disease')}",
+                "_probs": pr.get("probabilities"),
+                "_classes": cnn_obj.class_names or [],
+            })
+        except Exception as exc:
+            results.append({
+                "Branch": "DL", "Model": cnn_obj.name,
+                "Prediction": "—", "Confidence": "—",
+                "Conf Level": "—", "Status": "Error",
+                "Notes": str(exc)[:80],
+                "_probs": None, "_classes": [],
+            })
+
+    return results
+
+
+def _render_compare_all_tab(image_path: Path, true_label, cohort, ml_bundle, cnns):
+    """Render the Compare All Models (ML + DL) tab content."""
+    st.markdown('<div class="ms-section">Combined ML + DL Model Comparison</div>',
+                unsafe_allow_html=True)
+    st.caption(
+        "Runs every available ML radiomics model and every available CNN model on the "
+        "selected image in one click. Results are independent of the single-model "
+        "Prediction sub-tab."
+    )
+
+    if st.button("Compare All Models (ML + DL)", type="primary", width="stretch",
+                 key="btn_compare_all"):
+        with st.spinner("Running all models — this may take a moment..."):
+            results = _run_combined_comparison(image_path, true_label, cohort, ml_bundle, cnns)
+        st.session_state["combined_comparison"] = results
+        n_ok  = sum(1 for r in results if r["Status"] == "Success")
+        n_err = len(results) - n_ok
+        if n_err == 0:
+            st.success(f"All {n_ok} models completed successfully.")
+        else:
+            st.warning(f"{n_ok} models succeeded; {n_err} failed or missing.")
+
+    results = st.session_state.get("combined_comparison", [])
+    if not results:
+        st.info("Click **Compare All Models** to run the full comparison.")
+        return
+
+    # ── Comparison table ──────────────────────────────────────────────────
+    display_rows = [{
+        "Branch": r["Branch"], "Model": r["Model"],
+        "Prediction": r["Prediction"], "Confidence": r["Confidence"],
+        "Conf Level": r["Conf Level"], "Status": r["Status"],
+        "Notes": r["Notes"],
+    } for r in results]
+    st.dataframe(pd.DataFrame(display_rows), width="stretch", hide_index=True)
+
+    # ── Consensus summary ─────────────────────────────────────────────────
+    st.markdown('<div class="ms-section">Consensus Summary</div>', unsafe_allow_html=True)
+
+    ok_results = [r for r in results if r["Status"] == "Success"]
+    ml_preds = [r["Prediction"] for r in ok_results if r["Branch"] == "ML"
+                and r["Prediction"] not in ("—", "")]
+    dl_preds = [r["Prediction"] for r in ok_results if r["Branch"] == "DL"
+                and r["Prediction"] not in ("—", "")]
+
+    ml_consensus = max(set(ml_preds), key=ml_preds.count) if ml_preds else "—"
+    dl_consensus = max(set(dl_preds), key=dl_preds.count) if dl_preds else "—"
+    all_preds    = ml_preds + dl_preds
+    overall_consensus = max(set(all_preds), key=all_preds.count) if all_preds else "—"
+
+    ml_agree_pct = (ml_preds.count(ml_consensus) / len(ml_preds) * 100) if ml_preds else 0
+    dl_agree_pct = (dl_preds.count(dl_consensus) / len(dl_preds) * 100) if dl_preds else 0
+    all_agree_pct = (all_preds.count(overall_consensus) / len(all_preds) * 100) if all_preds else 0
+
+    def _agree_badge(pct):
+        if pct >= 80: return "Strong"
+        if pct >= 60: return "Moderate"
+        return "Mixed"
+
+    ml_badge  = _agree_badge(ml_agree_pct)
+    dl_badge  = _agree_badge(dl_agree_pct)
+    all_badge = _agree_badge(all_agree_pct)
+    ml_dl_agree = (ml_consensus == dl_consensus and ml_consensus != "—")
+
+    s1, s2, s3, s4 = st.columns(4)
+    s1.metric("ML Consensus",      ml_consensus,      f"{ml_agree_pct:.0f}% ML agree")
+    s2.metric("DL Consensus",      dl_consensus,      f"{dl_agree_pct:.0f}% DL agree")
+    s3.metric("Overall Consensus", overall_consensus, f"{all_agree_pct:.0f}% all agree")
+    s4.metric("Agreement",         all_badge)
+
+    if ml_dl_agree:
+        st.success(
+            f"ML and DL models agree: **{overall_consensus}** "
+            f"({all_agree_pct:.0f}% overall agreement)."
+        )
+    else:
+        st.warning(
+            f"ML models favour **{ml_consensus}** while DL models favour **{dl_consensus}**. "
+            "This disagreement should be interpreted carefully and reviewed by a clinician."
+        )
+
+    # ── Explainability availability ────────────────────────────────────────
+    st.markdown('<div class="ms-section">Explainability Available for Compared Models</div>',
+                unsafe_allow_html=True)
+    asset_status = {row["Model"]: row for row in _get_expl_asset_status()}
+    expl_rows = []
+    for r in ok_results:
+        info = asset_status.get(r["Model"], {})
+        expl_rows.append({
+            "Model":       r["Model"],
+            "Branch":      r["Branch"],
+            "Prediction":  r["Prediction"],
+            "Explanation Available": info.get("Found", "Unknown"),
+            "Explanation Type":      info.get("Explanation", "—"),
+            "Notes":                 info.get("Notes", "—"),
+        })
+    if expl_rows:
+        st.dataframe(pd.DataFrame(expl_rows), width="stretch", hide_index=True)
+
+    # ── Scope warning ─────────────────────────────────────────────────────
+    st.markdown("""
+<div class="disclaimer" style="margin-top:10px">
+  <strong>Important:</strong> This comparison is based on the uploaded ultrasound image only.
+  The models do not use patient history, symptoms, laboratory tests, genetic testing, EMG,
+  biopsy results, or physician examination findings.
+</div>
+""", unsafe_allow_html=True)
+    show_clinical_disclaimer()
 
 
 def get_explainability_assets(model_name, model_type):
@@ -1409,6 +1720,32 @@ def render_validation_page():
             "output/aplus/ or results/a_plus_full_improvements/"
         )
 
+    # ── Explainability Asset Status ───────────────────────────────────────
+    st.markdown('<div class="ms-section">Explainability Asset Status</div>',
+                unsafe_allow_html=True)
+    st.caption(
+        "Status of SHAP and Grad-CAM assets for all known models. "
+        "Checked live with Path.exists()."
+    )
+    with st.expander("Explainability Asset Status (all models)", expanded=False):
+        asset_rows = _get_expl_asset_status()
+        df_assets  = pd.DataFrame(asset_rows)
+        # Highlight Found column
+        def _color_found(val):
+            if val == "Yes":   return "background-color:#d1fae5;color:#065f46"
+            if val == "No SHAP" or val == "No": return "background-color:#fee2e2;color:#991b1b"
+            return ""
+        try:
+            styled = df_assets.style.applymap(_color_found, subset=["Found"])
+            st.dataframe(styled, width="stretch", hide_index=True)
+        except Exception:
+            st.dataframe(df_assets, width="stretch", hide_index=True)
+        st.caption(
+            "All SHAP assets are model-level/global explanations (thesis evaluation), "
+            "not per-image current-case explanations. "
+            "Grad-CAM assets are precomputed for EfficientNetB0 only."
+        )
+
     show_clinical_disclaimer()
 
 
@@ -1658,6 +1995,7 @@ def _collect_report_data() -> dict:
         avg_conf=avg_conf, conf_level=conf_level,
         now=datetime.datetime.now().strftime("%Y-%m-%d  %H:%M:%S"),
         case_id=Path(image_path).stem if image_path else "—",
+        combined_comparison=st.session_state.get("combined_comparison", []),
     )
 
 
@@ -2157,6 +2495,69 @@ def _img_arr_b64(arr) -> str:
         return ""
 
 
+def _build_combined_comparison_html(combined: list, B: dict) -> str:
+    """Build an HTML block for the Combined ML + DL Model Comparison section.
+
+    Returns an empty string if no combined comparison data is available.
+    Never crashes.
+    """
+    if not combined:
+        return ""
+    try:
+        ok_rows = [r for r in combined if r.get("Status") == "Success"]
+        ml_preds = [r["Prediction"] for r in ok_rows if r["Branch"] == "ML"
+                    and r["Prediction"] not in ("—", "")]
+        dl_preds = [r["Prediction"] for r in ok_rows if r["Branch"] == "DL"
+                    and r["Prediction"] not in ("—", "")]
+        ml_con = max(set(ml_preds), key=ml_preds.count) if ml_preds else "—"
+        dl_con = max(set(dl_preds), key=dl_preds.count) if dl_preds else "—"
+        all_p  = ml_preds + dl_preds
+        all_con = max(set(all_p), key=all_p.count) if all_p else "—"
+        agree = ml_con == dl_con and ml_con != "—"
+
+        rows_html = ""
+        for r in combined:
+            rows_html += (
+                f'<tr style="border-bottom:1px solid {B["border"]}">'
+                f'<td style="padding:5px 8px;font-weight:600">{r["Branch"]}</td>'
+                f'<td style="padding:5px 8px">{r["Model"]}</td>'
+                f'<td style="padding:5px 8px;color:{_disease_color(r["Prediction"])};font-weight:700">'
+                f'{r["Prediction"]}</td>'
+                f'<td style="padding:5px 8px;text-align:center">{r["Confidence"]}</td>'
+                f'<td style="padding:5px 8px;text-align:center">{r["Conf Level"]}</td>'
+                f'<td style="padding:5px 8px;text-align:center">{r["Status"]}</td>'
+                f'</tr>'
+            )
+
+        agree_note = (
+            f'ML and DL agree: <strong>{all_con}</strong>.'
+            if agree else
+            f'ML favours <strong>{ml_con}</strong>; DL favours <strong>{dl_con}</strong>. '
+            'Disagreement present — clinical review required.'
+        )
+        return (
+            f'<div class="sec"><span class="sec-badge">L</span>'
+            f'<span class="sec-title">Combined ML + DL Model Comparison</span>'
+            f'<span class="sec-line"></span></div>'
+            f'<div class="card">'
+            f'<div style="border:1px solid {B["border"]};border-radius:6px;overflow:hidden;margin-bottom:10px">'
+            f'<table><thead><tr style="background:{B["navy"]};color:{B["grey_bg"]}">'
+            f'<th>Branch</th><th>Model</th><th>Prediction</th>'
+            f'<th style="text-align:center">Confidence</th>'
+            f'<th style="text-align:center">Conf Level</th>'
+            f'<th style="text-align:center">Status</th>'
+            f'</tr></thead><tbody>{rows_html}</tbody></table></div>'
+            f'<p style="font-size:.84rem;font-style:italic;color:{B["navy"]};margin-bottom:6px">'
+            f'Consensus: ML={ml_con} | DL={dl_con} | Overall={all_con}. {agree_note}</p>'
+            f'<p style="font-size:.78rem;color:{B["muted"]}">'
+            'Model disagreement does not indicate clinical uncertainty alone. '
+            'Final interpretation requires clinical context and specialist review.</p>'
+            f'</div>'
+        )
+    except Exception:
+        return ""
+
+
 def _build_report_html(data: dict) -> str:
     """Build a complete standalone HTML clinical report."""
     B   = BRAND
@@ -2364,6 +2765,7 @@ td{{padding:6px 10px}}
     <div class="card">{clinical_interp_html}</div>
     <div class="sec"><span class="sec-badge">K</span><span class="sec-title">Limitations</span><span class="sec-line"></span></div>
     <div class="card">{limitations_html}</div>
+    {_build_combined_comparison_html(data.get('combined_comparison', []), B)}
     <div class="sec"><span class="sec-badge">G</span><span class="sec-title">Doctor-in-the-Loop Disclaimer</span><span class="sec-line"></span></div>
     <div class="disclaimer">
       <span style="font-size:1.2rem">&#9888;&#65039;</span>
