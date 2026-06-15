@@ -92,40 +92,77 @@ if cam_np.max() > 0:
 
 print(f"Grad-CAM map shape: {cam_np.shape}, max: {cam_np.max():.4f}")
 
-# ── overlay on original image ─────────────────────────────────────────────────
+# ── build a landscape side-by-side panel: Original | Heatmap | Overlay ───────
 import cv2
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
+
+PANEL_H = 380   # fixed panel height for all three tiles
+TILE_W  = 380   # each tile width → total canvas: 3 * 380 = 1140 wide (matches EfficientNetB0)
+
+def resize_to_panel(arr, tw, th):
+    """Resize an RGB numpy array to (tw, th) keeping aspect ratio, padded black."""
+    h, w = arr.shape[:2]
+    scale = min(tw / w, th / h)
+    nw, nh = int(w * scale), int(h * scale)
+    resized = cv2.resize(arr, (nw, nh), interpolation=cv2.INTER_LINEAR)
+    canvas  = np.zeros((th, tw, 3), dtype=np.uint8)
+    ox, oy  = (tw - nw) // 2, (th - nh) // 2
+    canvas[oy:oy+nh, ox:ox+nw] = resized
+    return canvas
 
 orig_rgb = np.array(Image.open(image_path).convert("RGB"))
 h, w     = orig_rgb.shape[:2]
 
-# Resize heatmap to match image
+# Heatmap coloured tile
 cam_resized = cv2.resize(cam_np, (w, h))
 heatmap     = np.uint8(255 * cam_resized)
 heatmap_col = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
 heatmap_rgb = cv2.cvtColor(heatmap_col, cv2.COLOR_BGR2RGB)
 
-# Blend
-alpha      = 0.5
-overlay    = np.uint8(alpha * heatmap_rgb + (1 - alpha) * orig_rgb)
+# Blend overlay
+alpha   = 0.5
+overlay = np.uint8(alpha * heatmap_rgb + (1 - alpha) * orig_rgb)
 
-# ── annotate and save ─────────────────────────────────────────────────────────
-from PIL import ImageDraw, ImageFont
+# Resize all three to the same panel size
+t1 = resize_to_panel(orig_rgb,    TILE_W, PANEL_H)
+t2 = resize_to_panel(heatmap_rgb, TILE_W, PANEL_H)
+t3 = resize_to_panel(overlay,     TILE_W, PANEL_H)
 
-final = Image.fromarray(overlay)
-draw  = ImageDraw.Draw(final)
+# Horizontal concat
+canvas = np.concatenate([t1, t2, t3], axis=1)
+
+# Add title bar at top
+TITLE_H = 42
+full_h  = PANEL_H + TITLE_H
+banner  = np.zeros((TITLE_H, canvas.shape[1], 3), dtype=np.uint8)
+banner[:] = (31, 41, 55)   # dark navy (#1F2937)
+
+# Concatenate banner + image grid
+final_arr = np.concatenate([banner, canvas], axis=0)
+final_img = Image.fromarray(final_arr)
+
+# Draw labels
+draw = ImageDraw.Draw(final_img)
 try:
-    font = ImageFont.truetype("arial.ttf", 16)
+    font_big  = ImageFont.truetype("arial.ttf", 18)
+    font_small = ImageFont.truetype("arial.ttf", 13)
 except Exception:
-    font = ImageFont.load_default()
+    font_big   = ImageFont.load_default()
+    font_small = font_big
 
-probs  = model.predict(x, verbose=0)[0]
-conf   = float(probs[ibm_idx]) * 100
-draw.rectangle([0, 0, w - 1, 26], fill=(0, 0, 0, 180))
-draw.text((6, 5), f"ResNet50  |  IBM  |  conf: {conf:.1f}%", fill=(255, 255, 255), font=font)
+probs = model.predict(x, verbose=0)[0]
+conf  = float(probs[ibm_idx]) * 100
+
+# Title text in banner
+draw.text((12, 11),  f"ResNet50 — Grad-CAM   |   Class: Inclusion Body Myositis   |   Confidence: {conf:.1f}%",
+          fill=(255, 255, 255), font=font_big)
+
+# Tile labels below banner
+for i, lbl in enumerate(["Original", "Heatmap", "Overlay"]):
+    draw.text((i * TILE_W + 10, TITLE_H + 4), lbl, fill=(255, 255, 200), font=font_small)
 
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 out_path = OUT_DIR / "gradcam_resnet50_Inclusion_Body_Myositis.png"
-final.save(str(out_path))
-print(f"\nSaved: {out_path}")
+final_img.save(str(out_path))
+print(f"\nSaved: {out_path}  size: {final_img.size}")
 print("Done.")
