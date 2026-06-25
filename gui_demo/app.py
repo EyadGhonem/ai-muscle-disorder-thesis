@@ -2638,226 +2638,207 @@ def _build_combined_comparison_html(combined: list, B: dict) -> str:
 
 
 def _build_report_html(data: dict) -> str:
-    """Build a complete standalone HTML clinical report."""
+    """Patient-friendly HTML report — clear results, plain language, no technical jargon."""
     B   = BRAND
     now = data["now"]
     ip  = data["image_path"]
-    tl  = data["true_label"]
     vp  = data["valid_preds"]
-    mt  = data["model_type"]
-    mn  = data["model_name"]
-    fi  = load_feature_importance()
-    top5 = fi.nlargest(5, "importance") if fi is not None else None
-    pipe = data.get("pipe")
 
-    top_feat_text = ", ".join(top5["feature"].tolist()) if top5 is not None else "gradient_mean, glcm_homogeneity, gradient_max, perimeter, area"
+    mc  = data.get("most_common", "—")
+    ac  = data.get("avg_conf")
+    dc  = _disease_color(mc)
 
-    # Preprocessing image strip
-    pipe_html = ""
-    if pipe:
-        cells = ""
-        for key, (lbl, _) in zip(["original","grayscale","threshold","roi_overlay","processed"], ROI_STEPS):
-            if key in pipe:
-                b64 = _img_arr_b64(pipe[key])
-                if b64:
-                    cells += f'<td style="text-align:center;padding:4px"><img src="{b64}" style="width:110px;height:88px;object-fit:contain;border-radius:5px;border:1px solid {B["border"]}"><br><span style="font-size:.68rem;color:{B["muted"]}">{lbl}</span></td>'
-        pipe_html = f'<table style="margin:8px 0"><tr>{cells}</tr></table>' if cells else ""
+    # ── Confidence bar ────────────────────────────────────────────────────
+    conf_01   = _normalize_conf(ac)
+    clabel    = confidence_label(conf_01)
+    conf_pct  = f"{ac:.0f}%" if ac is not None and ac == ac else "N/A"
+    bar_w     = f"{min(max(int(ac or 0), 0), 100)}%" if ac else "0%"
+    bar_color = {"High": "#059669", "Moderate": "#D97706",
+                 "Low": "#DC2626", "Very Low": "#DC2626"}.get(clabel, "#9CA3AF")
+    conf_note = {
+        "High":     "The AI is highly confident in this finding.",
+        "Moderate": "The AI has moderate confidence. A specialist review is advisable.",
+        "Low":      "The AI has low confidence. Please consult your doctor.",
+        "Very Low": "Confidence is very low — this result needs careful clinical review.",
+    }.get(clabel, "Confidence could not be determined.")
 
-    # Feature rows
-    feat_rows = ""
-    feats = data.get("feats")
-    feat_cols = data.get("feat_cols", [])
-    if feats is not None and feat_cols and top5 is not None:
-        for _, row in top5.iterrows():
-            fn = row["feature"]; imp = f"{row['importance']:.4f}"; val = "—"
-            if fn in feat_cols:
-                idx = feat_cols.index(fn)
-                if idx < len(feats): val = f"{float(feats[idx]):.4f}"
-            feat_rows += f'<tr><td style="padding:5px 10px;font-weight:600;color:{B["burgundy"]}">{fn}</td><td style="padding:5px 10px;text-align:center">{imp}</td><td style="padding:5px 10px;text-align:center;font-family:monospace">{val}</td></tr>'
-
-    # Prediction rows
-    pred_rows = ""
-    for p in vp:
-        cv = p.get("confidence", float("nan"))
-        cs = f"{cv:.1f}%" if not np.isnan(float(cv)) else "N/A"
-        cls = p.get("predicted_class","—")
-        pred_rows += f'<tr style="border-bottom:1px solid {B["border"]}"><td style="padding:6px 10px;font-weight:600">{p.get("selected_model",p.get("Model","—"))}</td><td style="padding:6px 10px;text-align:center">{mt or "—"}</td><td style="padding:6px 10px;color:{_disease_color(cls)};font-weight:700">{cls}</td><td style="padding:6px 10px;text-align:center;font-family:monospace">{cs}</td></tr>'
-
-    mc   = data.get("most_common","—")
-    ac   = data.get("avg_conf")
-    cl   = data.get("conf_level","—")
-    agr  = data.get("agreement_cnt",0)
-    cs   = f"{ac:.1f}%" if ac and not np.isnan(ac) else "N/A"
-    dc   = _disease_color(mc)
-    cl_bg = {"High": B["green_bg"], "Medium": B["amber_bg"], "Low": B["red_bg"]}.get(cl, B["grey_bg"])
-    cl_fg = {"High": B["green"], "Medium": B["amber"], "Low": B["red"]}.get(cl, B["muted"])
-
-    expl_html = ""
-    if mt == "ML":
-        expl_html = f'<p style="font-size:.85rem"><b>Method:</b> Radiomics feature importance (SHAP TreeExplainer) &nbsp;&middot;&nbsp; <b>Selected model:</b> {mn}<br><b>Top features:</b> <span style="color:{B["burgundy"]};font-weight:600">{top_feat_text}</span><br><i style="color:{B["muted"]}">Grad-CAM does not apply — this is an ML radiomics model.</i></p>'
-    elif mt == "DL":
-        expl_html = f'<p style="font-size:.85rem"><b>Method:</b> Grad-CAM (Gradient-weighted Class Activation Mapping) &nbsp;&middot;&nbsp; <b>CNN:</b> {mn}<br><i style="color:{B["muted"]}">SHAP feature values are from ML training and do not explain this CNN prediction.</i></p>'
-    else:
-        expl_html = '<p style="font-size:.85rem;color:#667085">No model selected.</p>'
-
-    # ── Top-3 differential table ──────────────────────────────────────────
-    top3_html = ""
+    # ── Top-3 differential ────────────────────────────────────────────────
+    top3_rows = ""
+    rank_labels = ["Most likely", "Possible", "Less likely"]
+    rank_colors = [dc, "#D97706", "#6B7280"]
     if vp:
         p1 = vp[0]
-        p1_probs = p1.get("probabilities")
-        p1_classes = p1.get("class_names", [])
-        if p1_probs is not None and p1_classes:
+        probs   = p1.get("probabilities")
+        classes = p1.get("class_names", [])
+        if probs is not None and classes:
             try:
-                probs_arr = np.array(p1_probs, dtype=float)
-                top_idx = np.argsort(probs_arr)[::-1][:3]
-                rows_t3 = ""
-                for rank, idx in enumerate(top_idx, 1):
-                    if int(idx) < len(p1_classes):
-                        prob_pct = f"{probs_arr[int(idx)] * 100:.1f}%"
-                        cls_t3 = p1_classes[int(idx)]
-                        rows_t3 += (
-                            f'<tr><td style="padding:5px 10px">{rank}</td>'
-                            f'<td style="padding:5px 10px;font-weight:600;color:{_disease_color(cls_t3)}">{cls_t3}</td>'
-                            f'<td style="padding:5px 10px;text-align:center;font-family:monospace">{prob_pct}</td></tr>'
+                arr     = np.array(probs, dtype=float)
+                top_idx = np.argsort(arr)[::-1][:3]
+                for i, idx in enumerate(top_idx):
+                    if int(idx) < len(classes):
+                        pct  = f"{arr[int(idx)] * 100:.0f}%"
+                        cls  = classes[int(idx)]
+                        lbl  = rank_labels[i] if i < len(rank_labels) else f"#{i+1}"
+                        clr  = rank_colors[i] if i < len(rank_colors) else "#6B7280"
+                        top3_rows += (
+                            f'<tr style="border-bottom:1px solid {B["border"]}">'
+                            f'<td style="padding:9px 14px;font-size:.8rem;color:#6B7280">{lbl}</td>'
+                            f'<td style="padding:9px 14px;font-weight:700;color:{clr};font-size:.95rem">{cls}</td>'
+                            f'<td style="padding:9px 14px;text-align:right;font-size:.88rem;color:#374151">{pct}</td>'
+                            f'</tr>'
                         )
-                if rows_t3:
-                    top3_html = (
-                        f'<table style="width:100%;border-collapse:collapse;font-size:.82rem">'
-                        f'<thead><tr style="background:{B["light_red"]};color:{B["navy"]}">'
-                        f'<th style="padding:7px 10px">Rank</th>'
-                        f'<th style="padding:7px 10px">Class</th>'
-                        f'<th style="padding:7px 10px;text-align:center">Probability</th>'
-                        f'</tr></thead><tbody>{rows_t3}</tbody></table>'
-                    )
             except Exception:
                 pass
-    if not top3_html:
-        top3_html = f'<p style="font-size:.84rem;color:{B["muted"]}">Top-3 class probabilities not available for this model.</p>'
-
-    # ── Confidence meaning ────────────────────────────────────────────────
-    conf_01_r = _normalize_conf(ac)
-    clabel_r  = confidence_label(conf_01_r)
-    conf_bg_map = {
-        "High": B["green_bg"], "Moderate": B["amber_bg"],
-        "Low": B["red_bg"], "Very Low": B["red_bg"], "Unknown": B["grey_bg"],
-    }
-    conf_fg_map = {
-        "High": B["green"], "Moderate": B["amber"],
-        "Low": B["red"], "Very Low": B["red"], "Unknown": B["muted"],
-    }
-    conf_warn = ""
-    if clabel_r in ("Low", "Very Low"):
-        conf_warn = (
-            f'<p style="font-size:.82rem;color:{B["red"]};margin-top:6px">'
-            "Low confidence may indicate an uncertain, out-of-distribution, or "
-            "visually ambiguous case. Clinical review is strongly recommended.</p>"
-        )
-    conf_meaning_html = (
-        f'<span style="background:{conf_bg_map.get(clabel_r, B["grey_bg"])};'
-        f'color:{conf_fg_map.get(clabel_r, B["muted"])};border-radius:99px;'
-        f'padding:3px 12px;font-weight:700;font-size:.88rem">{clabel_r}</span>'
-        f'&nbsp; <span style="font-size:.85rem;color:{B["navy"]}">{cs}</span>'
-        f'{conf_warn}'
-    )
+    if not top3_rows:
+        top3_rows = f'<tr><td colspan="3" style="padding:10px 14px;color:{B["muted"]};font-size:.85rem">Probability breakdown not available for this model.</td></tr>'
 
     # ── Clinical interpretation ───────────────────────────────────────────
-    interp_txt = CLINICAL_INTERPRETATION.get(mc, "")
-    clinical_interp_html = (
-        f'<p style="font-size:.85rem;color:{B["navy"]};line-height:1.65">{interp_txt}</p>'
-        if interp_txt else
-        f'<p style="font-size:.84rem;color:{B["muted"]}">Interpretation not available.</p>'
+    interp = CLINICAL_INTERPRETATION.get(mc, "")
+    interp_html = (
+        f'<p style="font-size:.92rem;color:#1F2937;line-height:1.75">{interp}</p>'
+        if interp else
+        f'<p style="font-size:.88rem;color:{B["muted"]}">No clinical note available for this result.</p>'
     )
 
-    # ── Limitations ───────────────────────────────────────────────────────
-    limitations_html = (
-        '<ul style="font-size:.82rem;line-height:1.9;color:#374151;padding-left:1.2rem;margin:0">'
-        "<li>Prediction based on ultrasound image only — no patient history, labs, EMG, or biopsy used.</li>"
-        "<li>Dataset imbalance: FSHD class dominates; models may be biased toward FSHD.</li>"
-        "<li>Source–disease confounding: different diseases acquired at different clinical centres.</li>"
-        "<li>No external clinical validation has been performed on independent datasets.</li>"
-        "<li>Research prototype — not approved for clinical diagnostic use.</li>"
-        "</ul>"
+    # ── What to do next ───────────────────────────────────────────────────
+    next_steps = [
+        "Share this report with your treating neurologist or specialist.",
+        "Do not start, stop, or change any treatment based on this AI result alone.",
+        "Ask your doctor to order confirmatory tests (EMG, biopsy, genetic testing) if appropriate.",
+        "Bring the original ultrasound images and any previous test results to your appointment.",
+        "This report may be used as a conversation starter — not as a standalone diagnosis.",
+    ]
+    steps_html = "".join(
+        f'<li style="padding:6px 0;font-size:.88rem;color:#1F2937;line-height:1.6">{s}</li>'
+        for s in next_steps
     )
+
+    # ── File info ─────────────────────────────────────────────────────────
+    fname = Path(ip).name if ip else "Not provided"
+    no_pred = not vp
 
     return f"""<!DOCTYPE html>
 <html lang="en">
-<head><meta charset="UTF-8"><title>MyoScan AI Report</title>
-<style>*{{box-sizing:border-box;margin:0;padding:0}}body{{font-family:'Segoe UI',Arial,sans-serif;background:#EBEBEB;padding:28px 16px}}
-.page{{max-width:820px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 4px 28px rgba(0,0,0,.13)}}
-.hdr{{background:{B['burgundy']};padding:18px 26px}}.hdr-title{{color:white;font-size:1.8rem;font-weight:900;letter-spacing:-.4px}}
-.hdr-sub{{color:rgba(255,255,255,.82);font-size:.84rem;margin-top:3px}}
-.meta{{background:{B['navy']};padding:8px 26px;display:flex;gap:22px;flex-wrap:wrap}}
-.meta span{{color:{B['grey_bg']};font-size:.75rem;font-family:monospace}}
-.body{{padding:20px 26px}}.sec{{display:flex;align-items:center;gap:8px;margin:16px 0 10px}}
-.sec-badge{{background:{B['burgundy']};color:white;border-radius:5px;padding:2px 8px;font-weight:700;font-size:.76rem}}
-.sec-title{{font-size:.92rem;font-weight:700;color:{B['navy']}}}
-.sec-line{{flex:1;height:1px;background:{B['border']}}}
-.card{{background:{B['grey_bg']};border:1px solid {B['border']};border-radius:8px;padding:12px 16px;margin-bottom:10px}}
-.kv{{display:grid;grid-template-columns:1fr 1fr;gap:8px 20px}}.kv-l{{font-size:.68rem;color:{B['muted']};text-transform:uppercase;letter-spacing:.5px}}
-.kv-v{{font-size:.85rem;font-weight:600;color:{B['navy']}}}
-table{{width:100%;border-collapse:collapse;font-size:.82rem}}
-th{{background:{B['navy']};color:{B['grey_bg']};padding:7px 10px;text-align:left}}
-td{{padding:6px 10px}}
-.result-box{{border:2px solid {dc};border-radius:10px;padding:14px 18px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px}}
-.result-cls{{font-size:1.7rem;font-weight:900;color:{dc}}}
-.conf-badge{{border-radius:99px;padding:4px 16px;font-weight:700;font-size:.88rem}}
-.disclaimer{{background:{B['light_red']};border:1.5px solid {B['burgundy']};border-radius:8px;padding:14px 18px;display:flex;gap:10px;align-items:flex-start;margin-top:8px}}
-.footer{{background:{B['navy']};color:{B['grey_bg']};text-align:center;font-size:.72rem;font-family:monospace;padding:9px}}
+<head><meta charset="UTF-8"><title>MyoScan AI — Patient Report</title>
+<style>
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{font-family:'Segoe UI',Arial,sans-serif;background:#EBEBEB;padding:24px 12px}}
+.page{{max-width:760px;margin:0 auto;background:#fff;border-radius:10px;overflow:hidden;box-shadow:0 4px 28px rgba(0,0,0,.13)}}
+.hdr{{background:{B['burgundy']};padding:20px 28px;display:flex;align-items:center;gap:16px}}
+.hdr-title{{color:#fff;font-size:1.9rem;font-weight:900;letter-spacing:-.5px}}
+.hdr-sub{{color:rgba(255,255,255,.82);font-size:.82rem;margin-top:2px}}
+.meta-bar{{background:{B['navy']};padding:7px 28px;display:flex;gap:24px;flex-wrap:wrap}}
+.meta-bar span{{color:#D1D5DB;font-size:.73rem;font-family:monospace}}
+.body{{padding:24px 28px}}
+.sec-hdr{{font-size:1.05rem;font-weight:800;color:{B['navy']};margin:20px 0 10px;
+          padding-bottom:5px;border-bottom:2px solid {B['burgundy']}}}
+.result-hero{{border:3px solid {dc};border-radius:12px;padding:18px 22px;margin-bottom:16px;
+              display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px}}
+.result-label{{font-size:.7rem;color:#6B7280;text-transform:uppercase;letter-spacing:.8px;margin-bottom:4px}}
+.result-name{{font-size:2rem;font-weight:900;color:{dc}}}
+.conf-pill{{display:inline-block;border-radius:99px;padding:5px 18px;
+            font-weight:800;font-size:.95rem;background:{bar_color};color:#fff}}
+.bar-bg{{background:#E5E7EB;border-radius:99px;height:10px;margin:6px 0 2px;overflow:hidden}}
+.bar-fill{{background:{bar_color};height:10px;width:{bar_w};border-radius:99px}}
+.card{{background:#F9FAFB;border:1px solid #E5E7EB;border-radius:9px;padding:14px 18px;margin-bottom:12px}}
+table{{width:100%;border-collapse:collapse}}
+td{{vertical-align:middle}}
+.step-list{{list-style:none;padding:0;margin:0}}
+.step-list li::before{{content:"→ ";color:{B['burgundy']};font-weight:700}}
+.warn-box{{background:#FEF3C7;border:1.5px solid #D97706;border-radius:8px;
+           padding:13px 16px;margin-bottom:12px;font-size:.84rem;color:#92400E;line-height:1.6}}
+.disclaimer{{background:{B['light_red']};border:1.5px solid {B['burgundy']};
+             border-radius:8px;padding:14px 18px;font-size:.82rem;
+             color:{B['navy']};line-height:1.65;margin-top:4px}}
+.footer{{background:{B['navy']};color:#9CA3AF;text-align:center;
+         font-size:.7rem;font-family:monospace;padding:9px}}
 </style></head><body>
 <div class="page">
+
+  <!-- Header -->
   <div class="hdr">
-    <div style="display:flex;align-items:center;gap:14px">
-      <svg width="42" height="42" viewBox="0 0 52 52" fill="none"><circle cx="26" cy="26" r="26" fill="rgba(255,255,255,.18)"/>
-        <path d="M8 26 Q13 16 18 26 Q23 36 28 26 Q33 16 38 26 Q41 20 44 26" stroke="white" stroke-width="2.8" stroke-linecap="round" fill="none"/>
-        <circle cx="26" cy="26" r="4" fill="white" opacity=".9"/></svg>
-      <div><div class="hdr-title">MyoScan AI</div><div class="hdr-sub">Explainable Ultrasound-Based Decision Support Report</div></div>
+    <svg width="44" height="44" viewBox="0 0 52 52" fill="none">
+      <circle cx="26" cy="26" r="26" fill="rgba(255,255,255,.18)"/>
+      <path d="M8 26 Q13 16 18 26 Q23 36 28 26 Q33 16 38 26 Q41 20 44 26"
+            stroke="white" stroke-width="2.8" stroke-linecap="round" fill="none"/>
+      <circle cx="26" cy="26" r="4" fill="white" opacity=".9"/>
+    </svg>
+    <div>
+      <div class="hdr-title">MyoScan AI</div>
+      <div class="hdr-sub">AI-Assisted Muscle Ultrasound Analysis Report</div>
     </div>
   </div>
-  <div class="meta">
+  <div class="meta-bar">
     <span>Date: {now}</span>
-    <span>File: {Path(ip).name if ip else '—'}</span>
-    <span>System: MyoScan AI v1.0 | GUC MET Bachelor Thesis</span>
+    <span>Image: {fname}</span>
+    <span>MyoScan AI v1.0 — Research Prototype</span>
   </div>
+
   <div class="body">
-    <div class="sec"><span class="sec-badge">B</span><span class="sec-title">Case Summary</span><span class="sec-line"></span></div>
-    <div class="card"><div class="kv">
-      <div><div class="kv-l">File name</div><div class="kv-v">{Path(ip).name if ip else 'Not provided'}</div></div>
-      <div><div class="kv-l">Image size</div><div class="kv-v">{data['img_size']}</div></div>
-      <div><div class="kv-l">Reference label</div><div class="kv-v" style="color:{_disease_color(tl or '')}">{tl or 'Not provided'}</div></div>
-      <div><div class="kv-l">Selected model</div><div class="kv-v">{mn or '—'} ({mt or '—'} branch)</div></div>
-    </div></div>
-    <div class="sec"><span class="sec-badge">C</span><span class="sec-title">Preprocessing</span><span class="sec-line"></span></div>
-    <div class="card"><p style="font-size:.84rem;margin-bottom:8px">Grayscale → Otsu threshold → Morphological ops → ROI contour → Feature region</p>{pipe_html}</div>
-    <div class="sec"><span class="sec-badge">D</span><span class="sec-title">Radiomics Features</span><span class="sec-line"></span></div>
+
+    <!-- 1. AI Finding -->
+    <div class="sec-hdr">1. AI Finding</div>
+    {'<div class="warn-box">&#9888; No prediction available yet. Please run the analysis first.</div>' if no_pred else f"""
+    <div class="result-hero">
+      <div>
+        <div class="result-label">Suggested condition</div>
+        <div class="result-name">{mc}</div>
+      </div>
+      <div style="text-align:right">
+        <div class="result-label">AI confidence</div>
+        <div class="conf-pill">{clabel} &nbsp; {conf_pct}</div>
+        <div class="bar-bg"><div class="bar-fill"></div></div>
+        <div style="font-size:.73rem;color:#6B7280;margin-top:2px">{conf_note}</div>
+      </div>
+    </div>
+    """}
+
+    <!-- 2. Other Conditions Considered -->
+    <div class="sec-hdr">2. Other Conditions the AI Considered</div>
     <div class="card">
-      {'<div style="border:1px solid ' + B["border"] + ';border-radius:6px;overflow:hidden"><table><thead><tr style="background:' + B["light_red"] + ';color:' + B["navy"] + '"><th>Feature</th><th style="text-align:center">Importance</th><th style="text-align:center">Current Value</th></tr></thead><tbody>' + feat_rows + '</tbody></table></div>' if feat_rows else '<p style="font-size:.84rem;color:' + B["muted"] + '">Features not extracted.</p>'}
-    </div>
-    <div class="sec"><span class="sec-badge">E</span><span class="sec-title">Prediction Summary</span><span class="sec-line"></span></div>
-    {'<div class="result-box"><div><div style="font-size:.7rem;color:' + B["muted"] + ';text-transform:uppercase">Selected Model Output</div><div class="result-cls">' + mc + '</div><div style="font-size:.78rem;color:' + B["muted"] + '">' + str(agr) + ' of ' + str(len(vp)) + ' models agree</div></div><div style="text-align:right"><div style="font-size:.7rem;color:' + B["muted"] + ';text-transform:uppercase">Confidence</div><div class="conf-badge" style="background:' + cl_bg + ';color:' + cl_fg + '">' + cl + ' &middot; ' + cs + '</div></div></div><div style="border:1px solid ' + B["border"] + ';border-radius:8px;overflow:hidden;margin-bottom:10px"><table><thead><tr><th>Model</th><th>Branch</th><th>Prediction</th><th style="text-align:center">Confidence</th></tr></thead><tbody>' + pred_rows + '</tbody></table></div>' if vp else '<div class="card" style="color:' + B["muted"] + '">No predictions available.</div>'}
-    <div class="sec"><span class="sec-badge">F</span><span class="sec-title">Explainability Notes</span><span class="sec-line"></span></div>
-    <div class="card">{expl_html}</div>
-    <div class="sec"><span class="sec-badge">H</span><span class="sec-title">Top-3 Differential Predictions</span><span class="sec-line"></span></div>
-    <div class="card">{top3_html}</div>
-    <div class="sec"><span class="sec-badge">I</span><span class="sec-title">Confidence Meaning</span><span class="sec-line"></span></div>
-    <div class="card">{conf_meaning_html}</div>
-    <div class="sec"><span class="sec-badge">J</span><span class="sec-title">Clinical Interpretation</span><span class="sec-line"></span></div>
-    <div class="card">{clinical_interp_html}</div>
-    <div class="sec"><span class="sec-badge">K</span><span class="sec-title">Limitations</span><span class="sec-line"></span></div>
-    <div class="card">{limitations_html}</div>
-    {_build_combined_comparison_html(data.get('combined_comparison', []), B)}
-    <div class="sec"><span class="sec-badge">G</span><span class="sec-title">Doctor-in-the-Loop Disclaimer</span><span class="sec-line"></span></div>
-    <div class="disclaimer">
-      <span style="font-size:1.2rem">&#9888;&#65039;</span>
-      <p style="font-size:.83rem;color:{B['navy']};line-height:1.65">
-        <strong>Research prototype only.</strong> MyoScan AI is a
-        <strong>doctor-in-the-loop</strong> decision-support tool. It is not a standalone
-        diagnostic system. Final interpretation must be made by a qualified clinician.
-        GUC MET Bachelor Thesis — Eyad Ghonem.
+      <p style="font-size:.82rem;color:#6B7280;margin-bottom:8px">
+        The AI evaluated several possible conditions. The table below shows the top three
+        possibilities in order of likelihood.
       </p>
+      <table>
+        <thead>
+          <tr style="background:{B['navy']};color:#F9FAFB">
+            <th style="padding:8px 14px;font-size:.8rem">Likelihood</th>
+            <th style="padding:8px 14px;font-size:.8rem">Condition</th>
+            <th style="padding:8px 14px;text-align:right;font-size:.8rem">Score</th>
+          </tr>
+        </thead>
+        <tbody>{top3_rows}</tbody>
+      </table>
     </div>
+
+    <!-- 3. What This May Mean -->
+    <div class="sec-hdr">3. What This May Mean</div>
+    <div class="card">{interp_html}</div>
+
+    <!-- 4. What To Do Next -->
+    <div class="sec-hdr">4. What To Do Next</div>
+    <div class="card">
+      <ul class="step-list">{steps_html}</ul>
+    </div>
+
+    <!-- 5. Important Notice -->
+    <div class="sec-hdr">5. Important Notice</div>
+    <div class="disclaimer">
+      <strong>&#9888; This is not a medical diagnosis.</strong><br><br>
+      MyoScan AI is a <strong>research prototype</strong> designed to assist clinicians —
+      it is not a replacement for a qualified doctor. This report was generated automatically
+      from an ultrasound image and <strong>does not use your medical history, symptoms,
+      laboratory results, EMG, biopsy, or physical examination findings</strong>.<br><br>
+      Always discuss any AI-assisted result with your doctor before making any health decision.
+      Final diagnosis and treatment decisions must be made by a qualified medical professional.<br><br>
+      <span style="font-size:.75rem;color:#6B7280">GUC MET Bachelor Thesis — Eyad Ghonem &nbsp;·&nbsp; MyoScan AI v1.0</span>
+    </div>
+
   </div>
-  <div class="footer">MyoScan AI &nbsp;·&nbsp; GUC MET Bachelor Thesis &nbsp;·&nbsp; Eyad Ghonem &nbsp;·&nbsp; {now}</div>
-</div></body></html>"""
+  <div class="footer">MyoScan AI &nbsp;·&nbsp; {now} &nbsp;·&nbsp; For clinical decision-support only — not for standalone diagnostic use</div>
+</div>
+</body></html>"""
 
 
 def _build_report_txt(data: dict) -> str:
