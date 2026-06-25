@@ -1567,18 +1567,6 @@ def _render_explainability_tab():
             return p
 
         def _show_gradcam(png_path, model_label, extra_note=""):
-            note_html = (
-                f'<br><span style="color:#065f46;font-size:.78rem">{extra_note}</span>'
-                if extra_note else ""
-            )
-            st.markdown(
-                f'<div style="background:#D1FAE5;border:1.5px solid #059669;border-radius:8px;'
-                f'padding:10px 16px;margin-bottom:10px;font-size:.84rem;color:#065f46">'
-                f'<strong>Grad-CAM available for {model_label}.</strong> '
-                f'Precomputed class-level example from thesis evaluation &mdash; '
-                f'not generated live for this specific image.{note_html}</div>',
-                unsafe_allow_html=True,
-            )
             st.image(str(png_path),
                      caption=f"{model_label} Grad-CAM — class: {pred_class} (precomputed example)",
                      width="stretch")
