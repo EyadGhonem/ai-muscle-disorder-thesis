@@ -734,6 +734,17 @@ def _parse_confidence_str(value) -> float:
         return float("nan")
 
 
+def _sort_combined_by_confidence(results: list) -> list:
+    """Sort Compare All rows: highest confidence first, failed/missing last."""
+    def _key(row):
+        if row.get("Status") != "Success":
+            return float("-inf")
+        conf = _parse_confidence_str(row.get("Confidence"))
+        return conf if conf == conf else float("-inf")
+
+    return sorted(results or [], key=_key, reverse=True)
+
+
 def _combined_results_to_predictions(combined: list) -> list:
     """Convert Compare All rows into last_predictions-compatible dicts for the report."""
     preds = []
@@ -757,6 +768,7 @@ def _combined_results_to_predictions(combined: list) -> list:
 
 def _sync_combined_to_report(results: list) -> None:
     """Push Compare All results into session state so the Report page can use them."""
+    results = _sort_combined_by_confidence(results)
     st.session_state["combined_comparison"] = results
     st.session_state["last_predictions"] = _combined_results_to_predictions(results)
     st.session_state["last_model_type"] = "Combined"
@@ -1401,12 +1413,12 @@ def _render_compare_all_tab(image_path: Path, true_label, cohort, ml_bundle, cnn
         else:
             st.warning(f"{n_ok} models succeeded; {n_err} failed or missing.")
 
-    results = st.session_state.get("combined_comparison", [])
+    results = _sort_combined_by_confidence(st.session_state.get("combined_comparison", []))
     if not results:
         st.info("Click **Compare All Models** to run the full comparison.")
         return
 
-    # ── Comparison table ──────────────────────────────────────────────────
+    # ── Comparison table (highest confidence first) ─────────────────────────
     display_rows = [{
         "Branch": r["Branch"], "Model": r["Model"],
         "Prediction": r["Prediction"], "Confidence": r["Confidence"],
@@ -2719,7 +2731,7 @@ def _build_combined_comparison_html(combined: list, B: dict) -> str:
         agree = ml_con == dl_con and ml_con != "—"
 
         rows_html = ""
-        for r in combined:
+        for r in _sort_combined_by_confidence(combined):
             rows_html += (
                 f'<tr style="border-bottom:1px solid {B["border"]}">'
                 f'<td style="padding:5px 8px;font-weight:600">{r["Branch"]}</td>'
@@ -2820,7 +2832,10 @@ def _build_report_html(data: dict) -> str:
     # ── Combined model comparison table (Compare All) ───────────────────────
     combined_html = ""
     if combined:
-        ok_rows = [r for r in combined if r.get("Status") == "Success" and r.get("Prediction") not in ("—", "")]
+        ok_rows = _sort_combined_by_confidence([
+            r for r in combined
+            if r.get("Status") == "Success" and r.get("Prediction") not in ("—", "")
+        ])
         if ok_rows:
             rows_c = ""
             for r in ok_rows:
