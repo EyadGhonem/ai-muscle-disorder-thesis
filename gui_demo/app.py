@@ -29,6 +29,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 # ── project paths ──────────────────────────────────────────────────────────
 GUI_DIR      = Path(__file__).resolve().parent
@@ -298,9 +299,56 @@ except ImportError:
 # ══════════════════════════════════════════════════════════════════════════
 
 def _go(page: str):
-    """Navigate to a page and rerun."""
+    """Navigate to a page, scroll to top, and rerun."""
+    if st.session_state.get("page") != page:
+        st.session_state["_scroll_top"] = True
     st.session_state["page"] = page
     st.rerun()
+
+
+def _inject_scroll_behavior(scroll_now: bool = False):
+    """Scroll main view to top on page change; also on Streamlit sub-tab clicks."""
+    flag = "true" if scroll_now else "false"
+    components.html(
+        f"""
+<script>
+(function () {{
+  function scrollTop() {{
+    try {{
+      const w = window.parent;
+      w.scrollTo(0, 0);
+      const doc = w.document;
+      for (const sel of [
+        'section.main',
+        '[data-testid="stMain"]',
+        '[data-testid="stAppViewContainer"]',
+        '.main'
+      ]) {{
+        const el = doc.querySelector(sel);
+        if (el) el.scrollTo(0, 0);
+      }}
+    }} catch (e) {{}}
+  }}
+
+  if ({flag}) {{
+    scrollTop();
+    setTimeout(scrollTop, 120);
+  }}
+
+  const w = window.parent;
+  if (!w._myoscanScrollInstalled) {{
+    w._myoscanScrollInstalled = true;
+    w.document.addEventListener('click', function (e) {{
+      const tab = e.target.closest('[data-baseweb="tab"]');
+      if (tab) setTimeout(scrollTop, 80);
+    }}, true);
+  }}
+}})();
+</script>
+        """,
+        height=0,
+        width=0,
+    )
 
 
 def render_sidebar_stepper():
@@ -3058,6 +3106,8 @@ section[data-testid="stSidebar"] { display: none !important; }
         render_validation_page()
     else:
         render_welcome_page()
+
+    _inject_scroll_behavior(st.session_state.pop("_scroll_top", False))
 
 
 if __name__ == "__main__":
