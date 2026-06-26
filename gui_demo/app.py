@@ -676,6 +676,60 @@ def confidence_label(conf_01) -> str:
     return "Very Low"
 
 
+def _parse_confidence_str(value) -> float:
+    """Parse a confidence string like '98.2%' into a float percentage."""
+    if value is None or value in ("—", "", "N/A"):
+        return float("nan")
+    try:
+        return float(str(value).replace("%", "").strip())
+    except Exception:
+        return float("nan")
+
+
+def _combined_results_to_predictions(combined: list) -> list:
+    """Convert Compare All rows into last_predictions-compatible dicts for the report."""
+    preds = []
+    for row in combined or []:
+        if row.get("Status") != "Success":
+            continue
+        pred_cls = row.get("Prediction", "—")
+        if pred_cls in ("—", "", None):
+            continue
+        preds.append({
+            "Model": row.get("Model"),
+            "branch": row.get("Branch"),
+            "selected_model": row.get("Model"),
+            "predicted_class": pred_cls,
+            "confidence": _parse_confidence_str(row.get("Confidence")),
+            "probabilities": row.get("_probs"),
+            "class_names": row.get("_classes") or [],
+        })
+    return preds
+
+
+def _sync_combined_to_report(results: list) -> None:
+    """Push Compare All results into session state so the Report page can use them."""
+    st.session_state["combined_comparison"] = results
+    st.session_state["last_predictions"] = _combined_results_to_predictions(results)
+    st.session_state["last_model_type"] = "Combined"
+    st.session_state["last_model_name"] = "ML + DL (all models)"
+    st.session_state["report_source"] = "combined"
+    for key in ("report_html", "report_data"):
+        st.session_state.pop(key, None)
+
+
+def _best_pred_for_top3(valid_preds: list) -> dict | None:
+    """Pick the highest-confidence prediction that has probability data."""
+    if not valid_preds:
+        return None
+    with_probs = [
+        p for p in valid_preds
+        if p.get("probabilities") is not None and p.get("class_names")
+    ]
+    pool = with_probs or valid_preds
+    return max(pool, key=lambda p: p.get("confidence") or float("-inf"))
+
+
 def _render_top3_predictions(probs, class_names: list):
     """Show a Top-3 differential prediction table from raw class probabilities."""
     if probs is None or not class_names:
@@ -819,9 +873,11 @@ def _render_image_selector():
                     "active_true_label": true_label,
                     "active_cohort":     cohort,
                     "last_predictions":  [],
+                    "combined_comparison": [],
                     "last_features":     None,
                     "last_model_type":   None,
                     "last_model_name":   None,
+                    "report_source":     None,
                 })
                 st.rerun()
 
@@ -836,9 +892,11 @@ def _render_image_selector():
                 "active_true_label": label_inf,
                 "active_cohort":     cohort_inf,
                 "last_predictions":  [],
+                "combined_comparison": [],
                 "last_features":     None,
                 "last_model_type":   None,
                 "last_model_name":   None,
+                "report_source":     None,
             })
 
     image_path = st.session_state.get("active_image_path")
@@ -965,6 +1023,9 @@ def _render_prediction_tab(image_path, true_label, cohort, ml_bundle, cnns):
                 st.session_state["last_model_name"] = model_name if not compare else (cnns[0].name if cnns else model_name)
 
         st.session_state["last_predictions"] = preds
+        st.session_state["report_source"] = "single"
+        for key in ("report_html", "report_data"):
+            st.session_state.pop(key, None)
 
     preds = st.session_state.get("last_predictions", [])
     if not preds:
@@ -1284,7 +1345,7 @@ def _render_compare_all_tab(image_path: Path, true_label, cohort, ml_bundle, cnn
                  key="btn_compare_all"):
         with st.spinner("Running all models — this may take a moment..."):
             results = _run_combined_comparison(image_path, true_label, cohort, ml_bundle, cnns)
-        st.session_state["combined_comparison"] = results
+        _sync_combined_to_report(results)
         n_ok  = sum(1 for r in results if r["Status"] == "Success")
         n_err = len(results) - n_ok
         if n_err == 0:
@@ -2037,13 +2098,19 @@ def _collect_report_data() -> dict:
     """Gather all session-state data needed for report generation."""
     image_path  = st.session_state.get("active_image_path")
     true_label  = st.session_state.get("active_true_label")
+    combined    = st.session_state.get("combined_comparison", [])
     preds       = st.session_state.get("last_predictions", [])
+    if not preds and combined:
+        preds = _combined_results_to_predictions(combined)
     feats       = st.session_state.get("last_features")
     feat_cols   = st.session_state.get("last_feat_cols", [])
     feat_source = st.session_state.get("last_feat_source", "")
     pipe        = st.session_state.get("last_pipe")
     model_type  = st.session_state.get("last_model_type")
     model_name  = st.session_state.get("last_model_name")
+    report_source = st.session_state.get("report_source", "single")
+    if combined and report_source != "single":
+        report_source = "combined"
     sample_cat  = st.session_state.get("sample_category", "Not provided")
     if sample_cat == "— Upload your own image —": sample_cat = "User upload"
 
@@ -2063,7 +2130,7 @@ def _collect_report_data() -> dict:
         most_common   = max(set(classes), key=classes.count)
         agreement_cnt = classes.count(most_common)
         avg_conf      = np.nanmean([p.get("confidence", float("nan")) for p in valid_preds])
-        conf_level    = "High" if avg_conf >= 70 else ("Medium" if avg_conf >= 40 else "Low")
+        conf_level    = confidence_label(_normalize_conf(avg_conf))
 
     return dict(
         image_path=image_path, true_label=true_label, preds=preds, valid_preds=valid_preds,
@@ -2074,7 +2141,9 @@ def _collect_report_data() -> dict:
         avg_conf=avg_conf, conf_level=conf_level,
         now=datetime.datetime.now().strftime("%Y-%m-%d  %H:%M:%S"),
         case_id=Path(image_path).stem if image_path else "—",
-        combined_comparison=st.session_state.get("combined_comparison", []),
+        combined_comparison=combined,
+        report_source=report_source,
+        top3_source=_best_pred_for_top3(valid_preds),
     )
 
 
@@ -2085,8 +2154,15 @@ def render_report_page():
 
     image_path = st.session_state.get("active_image_path")
     if not image_path or not Path(image_path).exists():
-        st.markdown('<div class="disclaimer">No image loaded. Go to <strong>Analysis</strong>, select an image and run a prediction, then return here.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="disclaimer">No image loaded. Go to <strong>Analysis</strong>, select an image and run a prediction or <strong>Compare All</strong>, then return here.</div>', unsafe_allow_html=True)
         return
+
+    has_report_input = bool(
+        st.session_state.get("last_predictions")
+        or st.session_state.get("combined_comparison")
+    )
+    if not has_report_input:
+        st.warning("Run **Prediction** or **Compare All Models (ML + DL)** first, then generate the report.")
 
     # Generate / Clear buttons
     g1, g2, _ = st.columns([1.2, 1, 3])
@@ -2643,16 +2719,17 @@ def _build_report_html(data: dict) -> str:
     now = data["now"]
     ip  = data["image_path"]
     vp  = data["valid_preds"]
+    combined = data.get("combined_comparison", [])
 
-    mc  = data.get("most_common", "—")
+    mc  = data.get("most_common") or "—"
     ac  = data.get("avg_conf")
-    dc  = _disease_color(mc)
+    dc  = _disease_color(mc if mc != "—" else "")
 
     # ── Confidence bar ────────────────────────────────────────────────────
     conf_01   = _normalize_conf(ac)
     clabel    = confidence_label(conf_01)
     conf_pct  = f"{ac:.0f}%" if ac is not None and ac == ac else "N/A"
-    bar_w     = f"{min(max(int(ac or 0), 0), 100)}%" if ac else "0%"
+    bar_w     = f"{min(max(int(ac or 0), 0), 100)}%" if ac and ac == ac else "0%"
     bar_color = {"High": "#059669", "Moderate": "#D97706",
                  "Low": "#DC2626", "Very Low": "#DC2626"}.get(clabel, "#9CA3AF")
     conf_note = {
@@ -2662,14 +2739,14 @@ def _build_report_html(data: dict) -> str:
         "Very Low": "Confidence is very low — this result needs careful clinical review.",
     }.get(clabel, "Confidence could not be determined.")
 
-    # ── Top-3 differential ────────────────────────────────────────────────
+    # ── Top-3 differential (best model with probabilities) ─────────────────
     top3_rows = ""
     rank_labels = ["Most likely", "Possible", "Less likely"]
     rank_colors = [dc, "#D97706", "#6B7280"]
-    if vp:
-        p1 = vp[0]
-        probs   = p1.get("probabilities")
-        classes = p1.get("class_names", [])
+    top3_src = data.get("top3_source") or (vp[0] if vp else None)
+    if top3_src:
+        probs   = top3_src.get("probabilities")
+        classes = top3_src.get("class_names", [])
         if probs is not None and classes:
             try:
                 arr     = np.array(probs, dtype=float)
@@ -2692,8 +2769,50 @@ def _build_report_html(data: dict) -> str:
     if not top3_rows:
         top3_rows = f'<tr><td colspan="3" style="padding:10px 14px;color:{B["muted"]};font-size:.85rem">Probability breakdown not available for this model.</td></tr>'
 
+    # ── Combined model comparison table (Compare All) ───────────────────────
+    combined_html = ""
+    if combined:
+        ok_rows = [r for r in combined if r.get("Status") == "Success" and r.get("Prediction") not in ("—", "")]
+        if ok_rows:
+            rows_c = ""
+            for r in ok_rows:
+                cls = r.get("Prediction", "—")
+                rows_c += (
+                    f'<tr style="border-bottom:1px solid {B["border"]}">'
+                    f'<td style="padding:8px 12px;font-size:.82rem">{r.get("Branch", "—")}</td>'
+                    f'<td style="padding:8px 12px;font-size:.82rem">{r.get("Model", "—")}</td>'
+                    f'<td style="padding:8px 12px;font-weight:700;color:{_disease_color(cls)}">{cls}</td>'
+                    f'<td style="padding:8px 12px;text-align:right;font-size:.82rem">{r.get("Confidence", "—")}</td>'
+                    f'</tr>'
+                )
+            agr = data.get("agreement_cnt") or 0
+            combined_html = f"""
+    <div class="sec-hdr">Models Checked</div>
+    <div class="card">
+      <p style="font-size:.82rem;color:#6B7280;margin-bottom:8px">
+        {len(ok_rows)} AI models were run on this image.
+        {agr} of them suggested <strong style="color:{dc}">{mc}</strong> as the most common result.
+      </p>
+      <table>
+        <thead>
+          <tr style="background:{B['navy']};color:#F9FAFB">
+            <th style="padding:8px 12px;font-size:.8rem">Type</th>
+            <th style="padding:8px 12px;font-size:.8rem">Model</th>
+            <th style="padding:8px 12px;font-size:.8rem">Suggested condition</th>
+            <th style="padding:8px 12px;text-align:right;font-size:.8rem">Confidence</th>
+          </tr>
+        </thead>
+        <tbody>{rows_c}</tbody>
+      </table>
+      <p style="font-size:.76rem;color:{B['muted']};margin-top:8px;font-style:italic">
+        Model disagreement does not indicate clinical uncertainty alone.
+        Final interpretation requires clinical context and specialist review.
+      </p>
+    </div>
+"""
+
     # ── Clinical interpretation ───────────────────────────────────────────
-    interp = CLINICAL_INTERPRETATION.get(mc, "")
+    interp = CLINICAL_INTERPRETATION.get(mc, "") if mc != "—" else ""
     interp_html = (
         f'<p style="font-size:.92rem;color:#1F2937;line-height:1.75">{interp}</p>'
         if interp else
@@ -2792,6 +2911,8 @@ td{{vertical-align:middle}}
       </div>
     </div>
     """}
+
+    {combined_html}
 
     <!-- 2. Other Conditions Considered -->
     <div class="sec-hdr">2. Other Conditions the AI Considered</div>
